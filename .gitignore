@@ -1,0 +1,6 @@
+# ignorar binarios compilados de Java
+*.class
+
+# ignorar configuraciones del editor
+.vscode/
+
