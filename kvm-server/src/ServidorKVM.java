@@ -43,28 +43,36 @@ public class ServidorKVM {
                     continue; 
                 }
 
-                // Formato esperado: "P,porcentajeX,porcentajeY"
-                if (comando.startsWith("P")) {
-                    try {
-                        String[] partes = comando.split(",");
-                        double porcX = Double.parseDouble(partes[1]);
-                        double porcY = Double.parseDouble(partes[2]);
-
-                        // Control de seguridad: Evitar que el mouse se salga de los límites lógicos
-                        if (porcX < 0) porcX = 0; if (porcX > 1) porcX = 1;
-                        if (porcY < 0) porcY = 0; if (porcY > 1) porcY = 1;
-
-                        // Convertimos el porcentaje a los píxeles reales de Windows
-                        int xFinal = (int) (porcX * anchoLocal);
-                        int yFinal = (int) (porcY * altoLocal);
-
-                        // El Robot ejecuta el movimiento de forma inmediata y directa
-                        robot.mouseMove(xFinal, yFinal);
-                    } catch (Exception ex) {
-                        // Si un paquete de red llega corrupto, lo ignora y pasa al siguiente sin tumbar el programa
+            // Formato esperado: "P,porcentajeX,porcentajeY"
+            if (controlandoWindows) {
+                    // ESCAPE: Si tiras el mouse a la izquierda, regresas a Arch
+                    if (xActual < (anchoMax / 2 - 150)) {
+                        controlandoWindows = false;
+                        salida.println("LIBERAR"); // Envía la señal de liberación al servidor
+                        Thread.sleep(100);
+                        continue;
                     }
+
+                    // Calculamos cuánto moviste el mouse físicamente en este instante
+                    int deltaX = xActual - ultimoX;
+                    int deltaY = yActual - ultimoY;
+
+                    if (deltaX != 0 || deltaY != 0) {
+                        // Convertimos el delta físico a una escala proporcional pura para la red
+                        double propX = (double) deltaX / (double) anchoMax;
+                        double propY = (double) deltaY / (double) altoMax;
+
+                        // Enviamos el desplazamiento puro al servidor
+                        salida.println("P," + propX + "," + propY);
+                    }
+
+                    // Regresamos el mouse de la laptop al centro virtual para mantener el recorrido infinito
+                    ultimoX = anchoMax / 2;
+                    ultimoY = altoMax / 2; // Centrado completo
+                    robotLocal.mouseMove(ultimoX, ultimoY);
                 }
             }
+        }
 
             System.out.println("La PC Maestra se ha desconectado.");
             entrada.close();
