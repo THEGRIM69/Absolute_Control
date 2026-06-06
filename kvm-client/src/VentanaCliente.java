@@ -37,7 +37,7 @@ public class VentanaCliente extends JFrame implements NativeMouseInputListener {
     private void alternarConexion() {
         if (!controlandoWindows && socket == null) {
             try {
-                socket = new Socket(txtIp.getText(), 8585);
+                socket = new Socket(txtIp.getText(), 8080);
                 salida = new PrintWriter(socket.getOutputStream(), true);
                 lblEstado.setText("Estado: ¡Controlando Windows! 🟢");
                 btnConectar.setText("Detener");

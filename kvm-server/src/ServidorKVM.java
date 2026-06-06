@@ -1,6 +1,5 @@
-import java.awt.Dimension;
-import java.awt.Robot;
-import java.awt.Toolkit;
+import java.awt.*;
+import java.awt.event.InputEvent;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.ServerSocket;
@@ -8,79 +7,47 @@ import java.net.Socket;
 
 public class ServidorKVM {
     public static void main(String[] args) {
-        int puerto = 8080;
-
         try {
-            // 1. REDES: Iniciamos el servidor en el puerto 8080
-            ServerSocket servidor = new ServerSocket(puerto);
-            System.out.println("=== RECEPTOR KVM PROPORCIONAL INICIADO ===");
-            System.out.println("Escuchando en el puerto " + puerto + "...");
-            System.out.println("Esperando conexión de la PC Maestra...");
-
-            // El programa se detiene aquí hasta que el cliente se conecte
-            Socket cliente = servidor.accept(); 
-            System.out.println("¡PC Maestra conectada desde: " + cliente.getInetAddress() + "!");
-
-            // 2. SISTEMAS OPERATIVOS: Detectamos la resolución de ESTA pantalla automáticamente
-            Dimension tamañoPantalla = Toolkit.getDefaultToolkit().getScreenSize();
-            int anchoLocal = (int) tamañoPantalla.getWidth();
-            int altoLocal = (int) tamañoPantalla.getHeight();
-            System.out.println("Resolución de pantalla local detectada: " + anchoLocal + "x" + altoLocal);
-
-            // Creamos el Robot que moverá el mouse real a nivel de Sistema Operativo
             Robot robot = new Robot();
-            
-            // Preparamos el lector de la red
-            BufferedReader entrada = new BufferedReader(new InputStreamReader(cliente.getInputStream()));
-            String comando;
+            ServerSocket servidor = new ServerSocket(8080);
+            System.out.println("=== SERVIDOR KVM ABSOLUTO (1366x768) ENCIENDIDO ===");
 
-            // 3. PROGRAMACIÓN 2: Bucle que procesa los datos optimizado para pantalla secundaria
-            while ((comando = entrada.readLine()) != null) {
-                
-                // Si el cliente pide liberar el control, reiniciamos el estado en el servidor
-                if (comando.equals("LIBERAR")) {
-                    System.out.println("Control devuelto a la PC Maestra temporalmente...");
-                    continue; 
-                }
+            while (true) {
+                System.out.println("Esperando conexión...");
+                Socket cliente = servidor.accept();
+                System.out.println("¡Conectado!");
 
-            // Formato esperado: "P,porcentajeX,porcentajeY"
-            if (controlandoWindows) {
-                    // ESCAPE: Si tiras el mouse a la izquierda, regresas a Arch
-                    if (xActual < (anchoMax / 2 - 150)) {
-                        controlandoWindows = false;
-                        salida.println("LIBERAR"); // Envía la señal de liberación al servidor
-                        Thread.sleep(100);
-                        continue;
+                BufferedReader entrada = new BufferedReader(new InputStreamReader(cliente.getInputStream()));
+                String linea;
+
+                while ((linea = entrada.readLine()) != null) {
+                    if (linea.equals("LIBERAR")) break;
+
+                    // Mover de forma absoluta "A,X,Y"
+                    if (linea.startsWith("A")) {
+                        String[] partes = linea.split(",");
+                        int x = Integer.parseInt(partes[1]);
+                        int y = Integer.parseInt(partes[2]);
+
+                        // Coloca el mouse exactamente en la misma coordenada que tu laptop
+                        robot.mouseMove(x, y);
                     }
 
-                    // Calculamos cuánto moviste el mouse físicamente en este instante
-                    int deltaX = xActual - ultimoX;
-                    int deltaY = yActual - ultimoY;
+                    // Clics "C,ACCION,BOTON"
+                    if (linea.startsWith("C")) {
+                        String[] partes = linea.split(",");
+                        String accion = partes[1];
+                        int boton = Integer.parseInt(partes[2]);
+                        int mascara = (boton == 1) ? InputEvent.BUTTON1_DOWN_MASK : InputEvent.BUTTON3_DOWN_MASK;
 
-                    if (deltaX != 0 || deltaY != 0) {
-                        // Convertimos el delta físico a una escala proporcional pura para la red
-                        double propX = (double) deltaX / (double) anchoMax;
-                        double propY = (double) deltaY / (double) altoMax;
-
-                        // Enviamos el desplazamiento puro al servidor
-                        salida.println("P," + propX + "," + propY);
+                        if (accion.equals("PRESIONAR")) robot.mousePress(mascara);
+                        else if (accion.equals("LIBERAR")) robot.mouseRelease(mascara);
                     }
-
-                    // Regresamos el mouse de la laptop al centro virtual para mantener el recorrido infinito
-                    ultimoX = anchoMax / 2;
-                    ultimoY = altoMax / 2; // Centrado completo
-                    robotLocal.mouseMove(ultimoX, ultimoY);
                 }
+                entrada.close();
+                cliente.close();
             }
-        }
-
-            System.out.println("La PC Maestra se ha desconectado.");
-            entrada.close();
-            cliente.close();
-            servidor.close();
-
         } catch (Exception e) {
-            System.out.println("Error en el servidor KVM: " + e.getMessage());
             e.printStackTrace();
         }
     }
