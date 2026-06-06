@@ -4,3 +4,13 @@
 # ignorar configuraciones del editor
 .vscode/
 
+# Ignorar arcvhivos empaquetados y librerias binarias
+*.jar
+*.war
+*.ear
+
+# Ignorar librerias nativas del sistema
+*.so
+*.dll
+*.dylib
+
