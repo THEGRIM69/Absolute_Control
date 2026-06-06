@@ -14,5 +14,5 @@
 *.dll
 *.dylib
 
-!lib/*.jar
-!lib/*.so
+!kvm-client/lib/*.jar
+!kvm-client/lib/*.so
