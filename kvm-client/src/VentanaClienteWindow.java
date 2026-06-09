@@ -33,7 +33,7 @@ public class VentanaClienteWindow extends JFrame
         setLayout(new FlowLayout(FlowLayout.LEFT, 10, 10));
         setResizable(false);
 
-        txtIp       = new JTextField("192.168.1.102", 13);
+        txtIp       = new JTextField("192.168.1.114", 13);
         btnConectar = new JButton("Iniciar Control");
         lblEstado   = new JLabel("Estado: Desconectado 🔴");
 
@@ -83,21 +83,27 @@ public class VentanaClienteWindow extends JFrame
 
     // ── Mouse ────────────────────────────────────────────────────
 
+    private int ultimoX = 0, ultimoY = 0;
+
     @Override
     public void nativeMouseMoved(NativeMouseEvent e) {
-        // Borde derecho → activar control automáticamente
+
         if (!controlando && e.getX() >= BORDE_DERECHO) {
             SwingUtilities.invokeLater(this::alternarConexion);
             return;
         }
         if (!controlando) return;
-
-        // Borde izquierdo → liberar control
+        
         if (e.getX() <= 2) {
             cerrarConexion();
             return;
         }
-        enviar("A," + e.getX() + "," + e.getY());
+        // Solo enviar si se movió más de 2 píxeles
+        if (Math.abs(e.getX() - ultimoX) > 2 || Math.abs(e.getY() - ultimoY) > 2) {
+            ultimoX = e.getX();
+            ultimoY = e.getY();
+            enviar("A," + e.getX() + "," + e.getY());
+        }
     }
 
     @Override
