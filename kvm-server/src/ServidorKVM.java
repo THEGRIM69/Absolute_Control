@@ -6,6 +6,8 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.HashMap;
+import java.util.Map;
 
 public class ServidorKVM {
 
@@ -14,6 +16,23 @@ public class ServidorKVM {
     private static int         anchoServidor;
     private static int         altoServidor;
     private static volatile boolean activo = false;
+    private static volatile boolean shiftActivo = false; // trackea Shift para OEM chars con mayúscula
+
+    // Mapa de char → VK para caracteres especiales del layout español
+    // En Windows con layout español, Robot necesita los VK_* correctos.
+    // Para ñ/Ñ y símbolos que Robot no puede hacer con getExtendedKeyCodeForChar
+    // usamos typeViaClipboard como fallback seguro.
+    private static final Map<Character, int[]> CHAR_TO_VK = new HashMap<>();
+
+    static {
+        // Vocales con tilde (minúsculas) — en Windows layout español: AltGr no aplica,
+        // se escriben con tecla muerta (´) + vocal. Robot no puede simular teclas muertas
+        // directamente, así que usamos clipboard para estos.
+        // Solo mapeamos los que Robot SÍ puede hacer directamente:
+        // Ñ/ñ: en layout español Windows el VK real es 0x00D1 (ñ) y 0x00D0 (Ñ)
+        // pero Robot.keyPress solo acepta VK_* definidos en KeyEvent — no acepta 0x00D1.
+        // La solución confiable para ñ y símbolos complejos es clipboard.
+    }
 
     public static void main(String[] args) {
         try {
@@ -34,7 +53,6 @@ public class ServidorKVM {
                 salida = new PrintWriter(cliente.getOutputStream(), true);
                 activo = true;
 
-                // Hilo que monitorea borde izquierdo
                 Thread monitor = new Thread(ServidorKVM::monitorearBorde);
                 monitor.setDaemon(true);
                 monitor.start();
@@ -51,7 +69,7 @@ public class ServidorKVM {
                         break;
                     }
 
-                    String[] p = linea.split(",");
+                    String[] p = linea.split(",", 3); // máx 3 partes para no romper chars como ","
 
                     // Mouse absoluto: "A,X,Y"
                     if (p[0].equals("A") && p.length == 3) {
@@ -80,18 +98,46 @@ public class ServidorKVM {
                         else if (p[1].equals("LIBERAR")) robot.mouseRelease(mascara);
                     }
 
-                    // Teclado: "K,PRESIONAR|LIBERAR,KEYCODE"
+                    // Teclado raw (teclas de control, flechas, F-keys, etc.): "K,PRESIONAR|LIBERAR,RAWCODE"
                     else if (p[0].equals("K") && p.length == 3) {
                         int rawCode = Integer.parseInt(p[2]);
-                        int keyCode = convertirKeyCode(rawCode);
-                        if (keyCode != -1) {
-                            try {
-                                if (p[1].equals("PRESIONAR")) robot.keyPress(keyCode);
-                                else if (p[1].equals("LIBERAR")) robot.keyRelease(keyCode);
-                            } catch (IllegalArgumentException ex) {
-                                System.out.println("Keycode no ejecutable: " + rawCode);
+
+                        // Trackear Shift para OEM chars
+                        if (rawCode == 160 || rawCode == 161) {
+                            shiftActivo = p[1].equals("PRESIONAR");
+                        }
+
+                        // VK OEM codes — cliente Windows con jNativeHook en modo VK directo
+                        // Llegan como K, pero son chars — manejar via clipboard solo en PRESIONAR
+                        char oemChar = oemVkToChar(rawCode, shiftActivo);
+                        if (oemChar != 0) {
+                            if (p[1].equals("PRESIONAR")) typeCharacter(oemChar);
+                            // ignorar LIBERAR de OEM keys
+                        } else {
+                            int keyCode = convertirKeyCode(rawCode);
+                            if (keyCode != -1) {
+                                try {
+                                    if (p[1].equals("PRESIONAR")) robot.keyPress(keyCode);
+                                    else if (p[1].equals("LIBERAR")) robot.keyRelease(keyCode);
+                                } catch (IllegalArgumentException ex) {
+                                    System.out.println("Keycode no ejecutable: " + rawCode);
+                                }
+                            } else {
+                                System.out.println("[SKIP] raw=" + rawCode + " no mapeado");
                             }
                         }
+                    }
+
+                    // Carácter tipado (ñ, á, é, letras normales, etc.): "T,<char>"
+                    else if (p[0].equals("T") && p.length == 2) {
+                        char c = p[1].charAt(0);
+                        typeCharacter(c);
+                    }
+
+                    // Scroll: "W,delta"  (negativo=arriba, positivo=abajo)
+                    else if (p[0].equals("W") && p.length == 2) {
+                        int delta = Integer.parseInt(p[1]);
+                        robot.mouseWheel(delta);
                     }
                 }
 
@@ -107,6 +153,105 @@ public class ServidorKVM {
         }
     }
 
+    /**
+     * Tipea un carácter en el servidor.
+     *
+     * Robot.keyPress() solo funciona para VK codes que Windows acepta directamente.
+     * Para ñ, á, é, símbolos del layout español, etc. — Robot falla con "Invalid key code".
+     * La solución confiable: pegar via clipboard (Ctrl+V) el char exacto.
+     *
+     * Flujo:
+     *  1. Char ASCII simple (a-z, A-Z, 0-9, espacio) → Robot directo (rápido)
+     *  2. Todo lo demás → clipboard + Ctrl+V
+     */
+    private static void typeCharacter(char c) {
+        // 1. ASCII imprimible básico: a-z, A-Z, 0-9, espacio
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ') {
+            int vk = KeyEvent.getExtendedKeyCodeForChar(c);
+            if (vk != KeyEvent.VK_UNDEFINED) {
+                try {
+                    robot.keyPress(vk);
+                    robot.keyRelease(vk);
+                    System.out.println("[T] '" + c + "' → VK=" + vk);
+                    return;
+                } catch (IllegalArgumentException ignored) {}
+            }
+        }
+        if (c >= 'A' && c <= 'Z') {
+            int vk = KeyEvent.getExtendedKeyCodeForChar(Character.toLowerCase(c));
+            if (vk != KeyEvent.VK_UNDEFINED) {
+                try {
+                    robot.keyPress(KeyEvent.VK_SHIFT);
+                    robot.keyPress(vk);
+                    robot.keyRelease(vk);
+                    robot.keyRelease(KeyEvent.VK_SHIFT);
+                    System.out.println("[T] '" + c + "' → SHIFT+VK=" + vk);
+                    return;
+                } catch (IllegalArgumentException ignored) {}
+            }
+        }
+
+        // 2. Cualquier otro char (ñ, á, é, ¿, ¡, símbolos, etc.) → clipboard
+        typeViaClipboard(c);
+    }
+
+    /**
+     * Pega un carácter usando el portapapeles del sistema.
+     * Guarda y restaura el contenido anterior del clipboard.
+     */
+    private static void typeViaClipboard(char c) {
+        java.awt.datatransfer.Clipboard cb =
+                Toolkit.getDefaultToolkit().getSystemClipboard();
+
+        // Guardar contenido anterior
+        java.awt.datatransfer.Transferable anterior = null;
+        try { anterior = cb.getContents(null); } catch (Exception ignored) {}
+
+        // Poner el char en el clipboard
+        java.awt.datatransfer.StringSelection sel =
+                new java.awt.datatransfer.StringSelection(String.valueOf(c));
+        cb.setContents(sel, sel);
+
+        // Ctrl+V
+        robot.keyPress(KeyEvent.VK_CONTROL);
+        robot.keyPress(KeyEvent.VK_V);
+        robot.keyRelease(KeyEvent.VK_V);
+        robot.keyRelease(KeyEvent.VK_CONTROL);
+
+        // Pequeña pausa para que la app destino procese el paste
+        try { Thread.sleep(15); } catch (InterruptedException ignored) {}
+
+        // Restaurar clipboard anterior
+        if (anterior != null) {
+            try { cb.setContents(anterior, null); } catch (Exception ignored) {}
+        }
+
+        System.out.println("[T-CB] '" + c + "' via clipboard");
+    }
+
+
+    /**
+     * Convierte VK OEM codes de Windows al char correspondiente en layout español.
+     * Estos códigos llegan cuando jNativeHook reporta VK directos en vez de scancodes.
+     * Retorna 0 si el rawCode no es un VK OEM conocido.
+     */
+    private static char oemVkToChar(int vk, boolean shift) {
+        return switch (vk) {
+            case 186 -> shift ? 'Ñ' : 'ñ';   // VK_OEM_1
+            case 187 -> shift ? '*' : '+';    // VK_OEM_PLUS
+            case 188 -> shift ? ';' : ',';    // VK_OEM_COMMA
+            case 189 -> shift ? '_' : '-';    // VK_OEM_MINUS
+            case 190 -> shift ? ':' : '.';    // VK_OEM_PERIOD
+            case 191 -> shift ? '?' : '¿';   // VK_OEM_2
+            case 192 -> shift ? '"' : '\'' ;  // VK_OEM_3
+            case 219 -> shift ? '^' : '`';   // VK_OEM_4
+            case 220 -> shift ? 'Ç' : 'ç';   // VK_OEM_5
+            case 221 -> shift ? '*' : '¨';   // VK_OEM_6 (puede variar)
+            case 222 -> shift ? '¨' : '´';   // VK_OEM_7
+            default  -> 0;
+        };
+    }
+
     private static void monitorearBorde() {
         while (activo && salida != null) {
             Point pos = MouseInfo.getPointerInfo().getLocation();
@@ -114,7 +259,6 @@ public class ServidorKVM {
                 System.out.println("Borde izquierdo - regresando control");
                 salida.println("REGRESAR");
                 activo = false;
-                // Mover mouse al centro para evitar loop
                 robot.mouseMove(anchoServidor / 2, altoServidor / 2);
                 break;
             }
@@ -168,22 +312,23 @@ public class ServidorKVM {
             case 58   -> KeyEvent.VK_CAPS_LOCK;
             case 42   -> KeyEvent.VK_SHIFT;
             case 54   -> KeyEvent.VK_SHIFT;
+            case 3638 -> KeyEvent.VK_SHIFT;
             case 29   -> KeyEvent.VK_CONTROL;
             case 3613 -> KeyEvent.VK_CONTROL;
             case 56   -> KeyEvent.VK_ALT;
             case 3640 -> KeyEvent.VK_ALT;
             case 3675 -> KeyEvent.VK_WINDOWS;
-            case 12  -> KeyEvent.VK_MINUS;
-            case 13  -> KeyEvent.VK_EQUALS;
-            case 26  -> KeyEvent.VK_OPEN_BRACKET;
-            case 27  -> KeyEvent.VK_CLOSE_BRACKET;
-            case 39  -> KeyEvent.VK_SEMICOLON;
-            case 40  -> KeyEvent.VK_QUOTE;
-            case 41  -> KeyEvent.VK_BACK_QUOTE;
-            case 43  -> KeyEvent.VK_BACK_SLASH;
-            case 51  -> KeyEvent.VK_COMMA;
-            case 52  -> KeyEvent.VK_PERIOD;
-            case 53  -> KeyEvent.VK_SLASH;
+            case 12  -> -1; // layout español: llega por T,char
+            case 13  -> -1; // layout español: llega por T,char
+            case 26  -> -1; // layout español: llega por T,char
+            case 27  -> -1; // layout español: llega por T,char
+            case 39  -> -1; // layout español: llega por T,char
+            case 40  -> -1; // layout español: llega por T,char
+            case 41  -> -1; // ñ en layout español — llega por T,ñ via clipboard, ignorar K
+            case 43  -> -1; // layout español: llega por T,char
+            case 51  -> -1; // layout español: llega por T,char
+            case 52  -> -1; // layout español: llega por T,char
+            case 53  -> -1; // layout español: llega por T,char
             case 59 -> KeyEvent.VK_F1;
             case 60 -> KeyEvent.VK_F2;
             case 61 -> KeyEvent.VK_F3;
