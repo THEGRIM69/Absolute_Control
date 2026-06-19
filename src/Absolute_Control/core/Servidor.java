@@ -24,6 +24,10 @@ public class Servidor {
     private static int           anchoServidor;
     private static int           altoServidor;
 
+    // Responde a broadcasts UDP de clientes buscando este servidor en la
+    // red local, para que el usuario no tenga que escribir la IP a mano.
+    private final Discovery discovery = new Discovery();
+
     public Servidor(int puerto, boolean clienteALaDerecha, Consumer<String> logger) {
         this.puerto            = puerto;
         this.clienteALaDerecha = clienteALaDerecha;
@@ -42,6 +46,8 @@ public class Servidor {
         Thread hilo = new Thread(this::loop);
         hilo.setDaemon(true);
         hilo.start();
+
+        discovery.iniciarResponder(puerto, logger);
 
         logger.accept("Servidor iniciado en puerto " + puerto);
         logger.accept("Pantalla: " + anchoServidor + "x" + altoServidor);
@@ -183,6 +189,7 @@ public class Servidor {
 
     public void detener() {
         corriendo = false;
+        discovery.detenerResponder();
         try { if (serverSocket != null) serverSocket.close(); } catch (Exception ignored) {}
         logger.accept("Servidor detenido.");
     }

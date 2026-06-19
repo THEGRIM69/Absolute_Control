@@ -1,6 +1,7 @@
 package Absolute_Control;
 
 import Absolute_Control.core.Cliente;
+import Absolute_Control.core.Discovery;
 import Absolute_Control.core.Servidor;
 import com.github.kwhat.jnativehook.GlobalScreen;
 
@@ -32,6 +33,14 @@ public class Main extends JFrame {
     private boolean servidorDerecha = true;
     private boolean panelAbierto  = false;
 
+    // Indica si el modo Rey está "activo" (hook registrado, esperando en el
+    // borde o controlando), independientemente de si en este instante el
+    // socket está conectado o no. isConectado() del Cliente refleja solo el
+    // estado del socket, que se apaga y prende solo cada vez que el mouse
+    // cruza el borde — por eso no sirve para decidir si el botón debe decir
+    // CONECTAR o DETENER.
+    private boolean reyActivo = false;
+
     private Cliente  cliente;
     private Servidor servidor;
 
@@ -40,6 +49,7 @@ public class Main extends JFrame {
     private JButton    btnTogglePanel;
     private JToggleButton btnRey, btnEsclavo;
     private JTextField txtIp, txtPuerto;
+    private JButton    btnBuscarIp;
     private JToggleButton btnIzquierda, btnDerecha;
     private JLabel     lblIpLocal;
     private JButton    btnAccion;
@@ -116,8 +126,7 @@ public class Main extends JFrame {
         // IP
         panelConfig.add(buildLabel("IP del Servidor (solo modo Rey)"));
         panelConfig.add(Box.createVerticalStrut(6));
-        txtIp = buildTextField("192.168.1.114");
-        panelConfig.add(txtIp);
+        panelConfig.add(buildIpRow());
         panelConfig.add(Box.createVerticalStrut(14));
 
         // Puerto
@@ -159,6 +168,56 @@ public class Main extends JFrame {
 
         p.add(btnRey); p.add(btnEsclavo);
         return p;
+    }
+
+    private JPanel buildIpRow() {
+        JPanel p = new JPanel(new BorderLayout(8, 0));
+        p.setOpaque(false);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 34));
+
+        txtIp = buildTextField("192.168.1.114");
+        p.add(txtIp, BorderLayout.CENTER);
+
+        btnBuscarIp = new JButton("Buscar");
+        btnBuscarIp.setFont(UI_FONT);
+        btnBuscarIp.setForeground(TEXT);
+        btnBuscarIp.setBackground(new Color(40, 44, 58));
+        btnBuscarIp.setBorderPainted(false);
+        btnBuscarIp.setFocusPainted(false);
+        btnBuscarIp.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        btnBuscarIp.addActionListener(e -> buscarServidorEnRed());
+        p.add(btnBuscarIp, BorderLayout.EAST);
+
+        return p;
+    }
+
+    /**
+     * Busca un Servidor (Esclavo) en la red local por broadcast UDP y, si
+     * lo encuentra, rellena el campo de IP automáticamente. La búsqueda en
+     * sí es bloqueante (espera hasta 2s una respuesta), así que corre en un
+     * hilo de fondo para no congelar la GUI.
+     */
+    private void buscarServidorEnRed() {
+        btnBuscarIp.setEnabled(false);
+        btnBuscarIp.setText("Buscando...");
+        log("Buscando servidor en la red local...");
+
+        Thread hilo = new Thread(() -> {
+            Discovery.ServidorEncontrado encontrado = Discovery.buscarServidor(2000);
+            SwingUtilities.invokeLater(() -> {
+                btnBuscarIp.setEnabled(true);
+                btnBuscarIp.setText("Buscar");
+                if (encontrado != null) {
+                    txtIp.setText(encontrado.ip);
+                    txtPuerto.setText(String.valueOf(encontrado.puertoTcp));
+                    log("Servidor encontrado: " + encontrado.ip + ":" + encontrado.puertoTcp);
+                } else {
+                    log("No se encontró ningún servidor en la red. Probá escribiendo la IP manualmente.");
+                }
+            });
+        });
+        hilo.setDaemon(true);
+        hilo.start();
     }
 
     private JPanel buildPosicionSelector() {
@@ -241,11 +300,17 @@ public class Main extends JFrame {
 
     private void handleAccion() {
         if (modoRey) {
-            if (cliente != null && cliente.isConectado()) {
-                cliente.desconectar();
-                cliente = null;
-                setEstado(false, "Desconectado");
-                btnAccion.setText("▶  CONECTAR");
+            // Antes se usaba "cliente != null && cliente.isConectado()" para
+            // decidir si el botón debía desconectar o conectar. El problema:
+            // isConectado() refleja solo el estado del socket, que el propio
+            // Cliente apaga automáticamente cada vez que el control "regresa"
+            // al cruzar el borde. Si el usuario apretaba Desconectar justo
+            // después de que el control hubiera vuelto solo, isConectado()
+            // ya era false, así que el botón entraba al else y arrancaba un
+            // cliente nuevo en vez de detener el modo Rey. Usamos reyActivo,
+            // que solo se apaga cuando el usuario detiene explícitamente.
+            if (reyActivo) {
+                detenerModoRey();
             } else {
                 iniciarCliente();
             }
@@ -271,20 +336,39 @@ public class Main extends JFrame {
 
         cliente = new Cliente(ip, puerto, servidorDerecha, ancho, this::log, () ->
                 SwingUtilities.invokeLater(() -> {
-                    setEstado(false, "Desconectado");
-                    btnAccion.setText("▶  CONECTAR");
+                    // El socket se cerró (el control "regresó" al cruzar el
+                    // borde de vuelta). El modo Rey sigue activo: el hook
+                    // sigue registrado y el usuario puede volver a cruzar
+                    // el borde para reconectar, así que NO tocamos reyActivo
+                    // ni el texto del botón aquí.
+                    setEstado(true, "Rey activo — lleva el mouse al borde para conectar");
                 })
         );
 
         try {
             GlobalScreen.registerNativeHook();
             cliente.iniciarHandlers();
+            reyActivo = true;
             setEstado(true, "Rey activo — lleva el mouse al borde para conectar");
             btnAccion.setText("⛔  DETENER");
             log("Modo Rey iniciado. Servidor: " + ip + ":" + puerto);
         } catch (Exception e) {
             log("Error: " + e.getMessage());
         }
+    }
+
+    private void detenerModoRey() {
+        if (cliente != null) {
+            cliente.detenerHandlers();
+            if (cliente.isConectado()) {
+                cliente.desconectar();
+            }
+        }
+        cliente   = null;
+        reyActivo = false;
+        setEstado(false, "Desconectado");
+        btnAccion.setText("▶  CONECTAR");
+        log("Modo Rey detenido.");
     }
 
     private void iniciarServidor() {
