@@ -20,3 +20,11 @@
 # Ignorar los compilados de Java
 **/out/
 **/*.class
+
+# Ignorar la carpeta de build completa (generada por build.ps1): incluye
+# build/classes (compilados intermedios), build/AbsoluteControl.jar, y
+# build/installer (el .exe final + el checksum .sha256.txt). Estos NO se
+# versionan en el repo — se publican como adjuntos en GitHub Releases.
+build/
+
+*.pfx

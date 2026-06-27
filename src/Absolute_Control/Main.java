@@ -15,11 +15,20 @@ import java.util.logging.Logger;
 
 public class Main extends JFrame {
 
+    /**
+     * Nivel de estado para el indicador tipo semáforo de la GUI.
+     * INACTIVO = rojo, ESPERANDO = amarillo, ACTIVO = verde.
+     */
+    private enum EstadoConexion {
+        INACTIVO, ESPERANDO, ACTIVO
+    }
+
     // ── Colores ───────────────────────────────────────────────────
     private static final Color BG       = new Color(24, 26, 34);
     private static final Color PANEL_BG = new Color(32, 35, 46);
     private static final Color ACCENT   = new Color(64, 196, 255);
     private static final Color SUCCESS  = new Color(50, 210, 130);
+    private static final Color WARNING  = new Color(240, 195, 60);
     private static final Color DANGER   = new Color(255, 80, 100);
     private static final Color TEXT     = new Color(220, 225, 240);
     private static final Color TEXT_DIM = new Color(120, 130, 155);
@@ -78,7 +87,7 @@ public class Main extends JFrame {
         p.setBackground(PANEL_BG);
         p.setBorder(new MatteBorder(0, 0, 1, 0, BORDER));
 
-        JLabel title = new JLabel("  ⬡  Absolute_Control");
+        JLabel title = new JLabel("Absolute Control");
         title.setFont(new Font("Segoe UI", Font.BOLD, 16));
         title.setForeground(ACCENT);
         title.setBorder(new EmptyBorder(12, 14, 12, 0));
@@ -132,7 +141,7 @@ public class Main extends JFrame {
         // Puerto
         panelConfig.add(buildLabel("Puerto"));
         panelConfig.add(Box.createVerticalStrut(6));
-        txtPuerto = buildTextField("8080");
+        txtPuerto = buildTextField("", "8080");
         panelConfig.add(txtPuerto);
         panelConfig.add(Box.createVerticalStrut(14));
 
@@ -156,8 +165,8 @@ public class Main extends JFrame {
         p.setOpaque(false);
         p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
 
-        btnRey    = buildToggle("👑  REY (Cliente)",    true);
-        btnEsclavo = buildToggle("🖥  ESCLAVO (Servidor)", false);
+        btnRey    = buildToggle("Cliente",    true);
+        btnEsclavo = buildToggle("Servidor", false);
 
         ButtonGroup g = new ButtonGroup();
         g.add(btnRey); g.add(btnEsclavo);
@@ -175,7 +184,7 @@ public class Main extends JFrame {
         p.setOpaque(false);
         p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 34));
 
-        txtIp = buildTextField("192.168.1.114");
+        txtIp = buildTextField("Sin IP — usá \"Buscar\" o escribila", "");
         p.add(txtIp, BorderLayout.CENTER);
 
         btnBuscarIp = new JButton("Buscar");
@@ -200,6 +209,7 @@ public class Main extends JFrame {
     private void buscarServidorEnRed() {
         btnBuscarIp.setEnabled(false);
         btnBuscarIp.setText("Buscando...");
+        setEstado(EstadoConexion.ESPERANDO, "Buscando servidor en la red...");
         log("Buscando servidor en la red local...");
 
         Thread hilo = new Thread(() -> {
@@ -211,8 +221,10 @@ public class Main extends JFrame {
                     txtIp.setText(encontrado.ip);
                     txtPuerto.setText(String.valueOf(encontrado.puertoTcp));
                     log("Servidor encontrado: " + encontrado.ip + ":" + encontrado.puertoTcp);
+                    setEstado(EstadoConexion.INACTIVO, "Servidor encontrado — listo para conectar");
                 } else {
                     log("No se encontró ningún servidor en la red. Probá escribiendo la IP manualmente.");
+                    setEstado(EstadoConexion.INACTIVO, "Inactivo");
                 }
             });
         });
@@ -242,7 +254,7 @@ public class Main extends JFrame {
     private void actualizarModo() {
         txtIp.setEnabled(modoRey);
         txtIp.setBackground(modoRey ? new Color(40, 44, 58) : new Color(30, 33, 44));
-        btnAccion.setText(modoRey ? "▶  CONECTAR" : "▶  INICIAR SERVIDOR");
+        btnAccion.setText(modoRey ? "CONECTAR" : "INICIAR SERVIDOR");
     }
 
     // ── Panel principal (siempre visible) ─────────────────────────
@@ -257,7 +269,7 @@ public class Main extends JFrame {
         center.setBorder(new EmptyBorder(16, 16, 8, 16));
 
         // Botón acción
-        btnAccion = buildAccionButton("▶  CONECTAR");
+        btnAccion = buildAccionButton("CONECTAR");
         btnAccion.setMaximumSize(new Dimension(Integer.MAX_VALUE, 44));
         center.add(buildConfigPanel());
         center.add(Box.createVerticalStrut(12));
@@ -275,7 +287,7 @@ public class Main extends JFrame {
         p.setOpaque(false);
         p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
 
-        lblEstado = new JLabel("● Inactivo");
+        lblEstado = new JLabel("●  Inactivo");
         lblEstado.setFont(UI_FONT);
         lblEstado.setForeground(TEXT_DIM);
         p.add(lblEstado);
@@ -318,7 +330,7 @@ public class Main extends JFrame {
             if (servidor != null && servidor.isCorriendo()) {
                 servidor.detener();
                 servidor = null;
-                setEstado(false, "Servidor detenido");
+                setEstado(EstadoConexion.INACTIVO, "Servidor detenido");
                 btnAccion.setText("▶  INICIAR SERVIDOR");
             } else {
                 iniciarServidor();
@@ -341,7 +353,7 @@ public class Main extends JFrame {
                     // sigue registrado y el usuario puede volver a cruzar
                     // el borde para reconectar, así que NO tocamos reyActivo
                     // ni el texto del botón aquí.
-                    setEstado(true, "Rey activo — lleva el mouse al borde para conectar");
+                    setEstado(EstadoConexion.ESPERANDO, "Rey activo — lleva el mouse al borde para conectar");
                 })
         );
 
@@ -349,8 +361,8 @@ public class Main extends JFrame {
             GlobalScreen.registerNativeHook();
             cliente.iniciarHandlers();
             reyActivo = true;
-            setEstado(true, "Rey activo — lleva el mouse al borde para conectar");
-            btnAccion.setText("⛔  DETENER");
+            setEstado(EstadoConexion.ESPERANDO, "Rey activo — lleva el mouse al borde para conectar");
+            btnAccion.setText("DETENER");
             log("Modo Rey iniciado. Servidor: " + ip + ":" + puerto);
         } catch (Exception e) {
             log("Error: " + e.getMessage());
@@ -366,8 +378,8 @@ public class Main extends JFrame {
         }
         cliente   = null;
         reyActivo = false;
-        setEstado(false, "Desconectado");
-        btnAccion.setText("▶  CONECTAR");
+        setEstado(EstadoConexion.INACTIVO, "Desconectado");
+        btnAccion.setText("CONECTAR");
         log("Modo Rey detenido.");
     }
 
@@ -379,8 +391,8 @@ public class Main extends JFrame {
         servidor = new Servidor(puerto, !servidorDerecha, this::log);
         try {
             servidor.iniciar();
-            setEstado(true, "Esclavo activo en :" + puerto);
-            btnAccion.setText("⛔  DETENER SERVIDOR");
+            setEstado(EstadoConexion.ESPERANDO, "Esclavo activo en :" + puerto + " — esperando cliente");
+            btnAccion.setText("DETENER SERVIDOR");
         } catch (Exception e) {
             log("Error iniciando servidor: " + e.getMessage());
         }
@@ -388,9 +400,23 @@ public class Main extends JFrame {
 
     // ── Utilidades ────────────────────────────────────────────────
 
-    private void setEstado(boolean activo, String msg) {
-        lblEstado.setText((activo ? "● " : "○ ") + msg);
-        lblEstado.setForeground(activo ? SUCCESS : TEXT_DIM);
+    private void setEstado(EstadoConexion estado, String msg) {
+        String punto = "●  ";
+        Color color;
+        switch (estado) {
+            case ACTIVO:
+                color = SUCCESS;
+                break;
+            case ESPERANDO:
+                color = WARNING;
+                break;
+            default:
+                color = DANGER;
+                punto = "○  ";
+                break;
+        }
+        lblEstado.setText(punto + msg);
+        lblEstado.setForeground(color);
     }
 
     private void log(String msg) {
@@ -399,7 +425,35 @@ public class Main extends JFrame {
             logArea.append(String.format("[%02d:%02d:%02d] %s%n",
                     t.getHour(), t.getMinute(), t.getSecond(), msg));
             logArea.setCaretPosition(logArea.getDocument().getLength());
+            actualizarSemaforoPorLog(msg);
         });
+    }
+
+    /**
+     * Cliente.java y Servidor.java avisan eventos de conexión real (control
+     * cruzando de una PC a otra) únicamente a través de mensajes de texto
+     * por el logger, no por un callback de estado dedicado. Para no tener
+     * que modificar esas clases, detectamos aquí las frases clave que ya
+     * emiten y las traducimos al color del semáforo. Si en algún momento
+     * cambia el texto exacto de esos logs en Cliente.java o Servidor.java,
+     * hay que actualizar también las frases acá.
+     */
+    private void actualizarSemaforoPorLog(String msg) {
+        if (!reyActivo && (servidor == null || !servidor.isCorriendo())) return;
+
+        if (msg.startsWith("Conectado a ")) {
+            // Cliente: el socket conectó, el control está activo
+            setEstado(EstadoConexion.ACTIVO, "Rey controlando");
+        } else if (msg.equals("Control regresado por el servidor")) {
+            setEstado(EstadoConexion.ESPERANDO, "Rey activo — lleva el mouse al borde para conectar");
+        } else if (msg.startsWith("Cliente conectado desde ")) {
+            // Servidor: llegó un cliente, el control está activo
+            setEstado(EstadoConexion.ACTIVO, "Esclavo activo — control en uso");
+        } else if (msg.equals("Cliente libero el control.") || msg.equals("Conexion cerrada.")) {
+            if (servidor != null && servidor.isCorriendo()) {
+                setEstado(EstadoConexion.ESPERANDO, "Esclavo activo — esperando cliente");
+            }
+        }
     }
 
     private void detectarIpLocal() {
@@ -422,7 +476,38 @@ public class Main extends JFrame {
     }
 
     private JTextField buildTextField(String placeholder) {
-        JTextField f = new JTextField(placeholder);
+        return buildTextField(placeholder, "");
+    }
+
+    /**
+     * Crea un campo de texto con placeholder real: el texto de ejemplo se ve
+     * en gris solo cuando el campo está vacío y sin foco, y desaparece en
+     * cuanto el usuario escribe algo o lo completa el botón "Buscar" (a
+     * diferencia de poner el placeholder como texto real dentro del campo,
+     * que se confundía con un valor ya ingresado, p. ej. una IP de ejemplo
+     * que parecía una IP real).
+     *
+     * @param placeholder  texto gris de ejemplo, se ve cuando el campo está vacío
+     * @param valorInicial valor real con el que arranca el campo (puede ser "")
+     */
+    private JTextField buildTextField(String placeholder, String valorInicial) {
+        JTextField f = new JTextField(valorInicial) {
+            @Override protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                if (placeholder != null && !placeholder.isEmpty()
+                        && getText().isEmpty() && !isFocusOwner()) {
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2.setColor(TEXT_DIM);
+                    g2.setFont(getFont());
+                    Insets ins = getInsets();
+                    FontMetrics fm = g2.getFontMetrics();
+                    int y = (getHeight() + fm.getAscent() - fm.getDescent()) / 2;
+                    g2.drawString(placeholder, ins.left, y);
+                    g2.dispose();
+                }
+            }
+        };
         f.setFont(MONO);
         f.setForeground(TEXT);
         f.setBackground(new Color(40, 44, 58));
@@ -431,6 +516,14 @@ public class Main extends JFrame {
                 new LineBorder(BORDER, 1, true),
                 new EmptyBorder(6, 10, 6, 10)));
         f.setMaximumSize(new Dimension(Integer.MAX_VALUE, 34));
+
+        // Repintamos al ganar/perder foco para que el placeholder
+        // aparezca/desaparezca de inmediato sin esperar otro evento.
+        f.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override public void focusGained(java.awt.event.FocusEvent e) { f.repaint(); }
+            @Override public void focusLost(java.awt.event.FocusEvent e)   { f.repaint(); }
+        });
+
         return f;
     }
 
