@@ -4,17 +4,21 @@ import com.github.kwhat.jnativehook.keyboard.NativeKeyEvent;
 import com.github.kwhat.jnativehook.keyboard.NativeKeyListener;
 
 import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.BooleanSupplier;
 
 public class KeyboardHandler implements NativeKeyListener {
 
-    private final Consumer<String> onEnviar;
-    private final Runnable         onDesconectar;
+    private Consumer<String> onEnviar;
+    private Runnable onDesconectar;
+    private BooleanSupplier eventoActual = () -> true;
 
-    private volatile boolean controlando  = false;
-    private volatile boolean shiftActivo  = false;
-    private volatile boolean altGrActivo  = false;
+    private boolean controlando  = false;
+    private boolean shiftActivo  = false;
+    private boolean altGrActivo  = false;
 
     private final Set<Integer> teclasPresionadas = new HashSet<>();
 
@@ -23,8 +27,20 @@ public class KeyboardHandler implements NativeKeyListener {
         this.onDesconectar = onDesconectar;
     }
 
-    public void setControlando(boolean controlando) {
+    public synchronized void setSesion(Consumer<String> enviar, Runnable desconectar) {
+        onEnviar = enviar; onDesconectar = desconectar;
+        setControlando(true);
+    }
+
+    public synchronized void setEventoActual(BooleanSupplier actual) { eventoActual = actual; }
+
+    public synchronized void setControlando(boolean controlando) {
         this.controlando = controlando;
+        if (!controlando) {
+            teclasPresionadas.clear();
+            shiftActivo = false;
+            altGrActivo = false;
+        }
     }
 
     private boolean esModificador(int raw) {
@@ -82,21 +98,16 @@ public class KeyboardHandler implements NativeKeyListener {
         };
     }
 
-    @Override
-    public void nativeKeyPressed(NativeKeyEvent e) {
+    private void procesarPresion(NativeKeyEvent e, List<String> mensajes) {
         int raw = e.getRawCode();
 
         if (raw == 160 || raw == 161) shiftActivo = true;
         if (raw == 165)               altGrActivo = true;
 
-        if (e.getKeyCode() == NativeKeyEvent.VC_ESCAPE && controlando) {
-            onDesconectar.run();
-            return;
-        }
         if (!controlando) return;
 
         if (esModificador(raw)) {
-            onEnviar.accept("K,PRESIONAR," + e.getKeyCode());
+            mensajes.add("K,PRESIONAR," + e.getKeyCode());
             return;
         }
 
@@ -108,15 +119,14 @@ public class KeyboardHandler implements NativeKeyListener {
         } else {
             char oemChar = oemRawToChar(raw);
             if (oemChar != 0) {
-                onEnviar.accept("T," + oemChar);
+                mensajes.add("T," + oemChar);
             } else {
-                onEnviar.accept("K,PRESIONAR," + e.getKeyCode());
+                mensajes.add("K,PRESIONAR," + e.getKeyCode());
             }
         }
     }
 
-    @Override
-    public void nativeKeyReleased(NativeKeyEvent e) {
+    private void procesarLiberacion(NativeKeyEvent e, List<String> mensajes) {
         int raw = e.getRawCode();
 
         if (raw == 160 || raw == 161) shiftActivo = false;
@@ -125,7 +135,7 @@ public class KeyboardHandler implements NativeKeyListener {
         if (!controlando) return;
 
         if (esModificador(raw)) {
-            onEnviar.accept("K,LIBERAR," + e.getKeyCode());
+            mensajes.add("K,LIBERAR," + e.getKeyCode());
             return;
         }
 
@@ -134,18 +144,56 @@ public class KeyboardHandler implements NativeKeyListener {
 
         if (!tieneChar) {
             char oemChar = oemRawToChar(raw);
-            if (oemChar == 0) onEnviar.accept("K,LIBERAR," + e.getKeyCode());
+            if (oemChar == 0) mensajes.add("K,LIBERAR," + e.getKeyCode());
         }
         teclasPresionadas.remove(raw);
     }
 
-    @Override
-    public void nativeKeyTyped(NativeKeyEvent e) {
+    private void procesarCaracter(NativeKeyEvent e, List<String> mensajes) {
         if (!controlando) return;
         char c = e.getKeyChar();
         if (c == NativeKeyEvent.CHAR_UNDEFINED || Character.isISOControl(c)) return;
         if (teclasPresionadas.remove(e.getRawCode())) {
-            onEnviar.accept("T," + c);
+            mensajes.add("T," + c);
         }
     }
+    // No invocar Cliente bajo este monitor: evita inversion de locks durante el cierre.
+    @Override
+    public void nativeKeyPressed(NativeKeyEvent e) {
+        List<String> mensajes = new ArrayList<>();
+        boolean escape;
+        Consumer<String> enviar;
+        Runnable desconectar;
+        synchronized (this) {
+            if (!eventoActual.getAsBoolean()) return;
+            enviar = onEnviar; desconectar = onDesconectar;
+            escape = controlando && e.getKeyCode() == NativeKeyEvent.VC_ESCAPE;
+            if (!escape) procesarPresion(e, mensajes);
+        }
+        if (escape) desconectar.run();
+        else mensajes.forEach(enviar);
+    }
+
+    @Override
+    public void nativeKeyReleased(NativeKeyEvent e) {
+        List<String> mensajes = new ArrayList<>();
+        Consumer<String> enviar;
+        synchronized (this) {
+            if (!eventoActual.getAsBoolean()) return;
+            enviar = onEnviar; procesarLiberacion(e, mensajes);
+        }
+        mensajes.forEach(enviar);
+    }
+
+    @Override
+    public void nativeKeyTyped(NativeKeyEvent e) {
+        List<String> mensajes = new ArrayList<>();
+        Consumer<String> enviar;
+        synchronized (this) {
+            if (!eventoActual.getAsBoolean()) return;
+            enviar = onEnviar; procesarCaracter(e, mensajes);
+        }
+        mensajes.forEach(enviar);
+    }
+
 }

@@ -3,6 +3,7 @@ package Absolute_Control;
 import Absolute_Control.core.Cliente;
 import Absolute_Control.core.Discovery;
 import Absolute_Control.core.Servidor;
+import Absolute_Control.core.GeometriaPantalla;
 import com.github.kwhat.jnativehook.GlobalScreen;
 
 import javax.swing.*;
@@ -39,7 +40,7 @@ public class Main extends JFrame {
 
     // ── Estado ────────────────────────────────────────────────────
     private boolean modoRey       = true;
-    private boolean servidorDerecha = true;
+    private boolean secundariaALaDerecha = true;
     private boolean panelAbierto  = false;
 
     // Indica si el modo Rey está "activo" (hook registrado, esperando en el
@@ -49,6 +50,8 @@ public class Main extends JFrame {
     // cruza el borde — por eso no sirve para decidir si el botón debe decir
     // CONECTAR o DETENER.
     private boolean reyActivo = false;
+    private long generacion = 0;
+    private boolean parando, cierreEnCurso, cerrarVentana;
 
     private Cliente  cliente;
     private Servidor servidor;
@@ -78,6 +81,12 @@ public class Main extends JFrame {
         add(buildMainPanel(),   BorderLayout.CENTER);
 
         detectarIpLocal();
+        setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
+        addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override public void windowClosing(java.awt.event.WindowEvent e) {
+                detenerComponentes(true);
+            }
+        });
     }
 
     // ── Panel toggle (cabecera colapsable) ────────────────────────
@@ -145,8 +154,8 @@ public class Main extends JFrame {
         panelConfig.add(txtPuerto);
         panelConfig.add(Box.createVerticalStrut(14));
 
-        // Posición del servidor
-        panelConfig.add(buildLabel("El servidor está a la..."));
+        // Posicion global de la secundaria respecto de la principal, en ambos modos.
+        panelConfig.add(buildLabel("La PC secundaria está a la..."));
         panelConfig.add(Box.createVerticalStrut(6));
         panelConfig.add(buildPosicionSelector());
         panelConfig.add(Box.createVerticalStrut(14));
@@ -207,6 +216,7 @@ public class Main extends JFrame {
      * hilo de fondo para no congelar la GUI.
      */
     private void buscarServidorEnRed() {
+        final long actual = ++generacion;
         btnBuscarIp.setEnabled(false);
         btnBuscarIp.setText("Buscando...");
         setEstado(EstadoConexion.ESPERANDO, "Buscando servidor en la red...");
@@ -215,7 +225,8 @@ public class Main extends JFrame {
         Thread hilo = new Thread(() -> {
             Discovery.ServidorEncontrado encontrado = Discovery.buscarServidor(2000);
             SwingUtilities.invokeLater(() -> {
-                btnBuscarIp.setEnabled(true);
+                if (actual != generacion || reyActivo || (servidor != null && servidor.isCorriendo())) return;
+                btnBuscarIp.setEnabled(modoRey);
                 btnBuscarIp.setText("Buscar");
                 if (encontrado != null) {
                     txtIp.setText(encontrado.ip);
@@ -237,22 +248,25 @@ public class Main extends JFrame {
         p.setOpaque(false);
         p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
 
-        btnIzquierda = buildToggle("◄  Izquierda", false);
-        btnDerecha   = buildToggle("Derecha  ►",   true);
+        btnIzquierda = buildToggle("◄  Secundaria a izquierda", false);
+        btnDerecha   = buildToggle("Secundaria a derecha  ►",   true);
 
         ButtonGroup g = new ButtonGroup();
         g.add(btnIzquierda); g.add(btnDerecha);
         btnDerecha.setSelected(true);
 
-        btnIzquierda.addActionListener(e -> servidorDerecha = false);
-        btnDerecha.addActionListener(e   -> servidorDerecha = true);
+        btnIzquierda.addActionListener(e -> secundariaALaDerecha = false);
+        btnDerecha.addActionListener(e   -> secundariaALaDerecha = true);
 
         p.add(btnIzquierda); p.add(btnDerecha);
         return p;
     }
 
     private void actualizarModo() {
+        generacion++;
+        btnBuscarIp.setText("Buscar");
         txtIp.setEnabled(modoRey);
+        btnBuscarIp.setEnabled(modoRey);
         txtIp.setBackground(modoRey ? new Color(40, 44, 58) : new Color(30, 33, 44));
         btnAccion.setText(modoRey ? "CONECTAR" : "INICIAR SERVIDOR");
     }
@@ -311,6 +325,7 @@ public class Main extends JFrame {
     // ── Lógica de acción ──────────────────────────────────────────
 
     private void handleAccion() {
+        if (parando) { detenerComponentes(false); return; }
         if (modoRey) {
             // Antes se usaba "cliente != null && cliente.isConectado()" para
             // decidir si el botón debía desconectar o conectar. El problema:
@@ -327,11 +342,8 @@ public class Main extends JFrame {
                 iniciarCliente();
             }
         } else {
-            if (servidor != null && servidor.isCorriendo()) {
-                servidor.detener();
-                servidor = null;
-                setEstado(EstadoConexion.INACTIVO, "Servidor detenido");
-                btnAccion.setText("▶  INICIAR SERVIDOR");
+            if (servidor != null) {
+                detenerComponentes(false);
             } else {
                 iniciarServidor();
             }
@@ -344,43 +356,84 @@ public class Main extends JFrame {
         try { puerto = Integer.parseInt(txtPuerto.getText().trim()); }
         catch (NumberFormatException e) { log("Puerto invalido"); return; }
 
-        int ancho = Toolkit.getDefaultToolkit().getScreenSize().width;
+        GeometriaPantalla pantalla = GeometriaPantalla.actual();
 
-        cliente = new Cliente(ip, puerto, servidorDerecha, ancho, this::log, () ->
+        if (ip.isEmpty() || puerto < 1 || puerto > 65535) { log("IP o puerto invalido"); return; }
+        final long actual = ++generacion;
+        cliente = new Cliente(ip, puerto, secundariaALaDerecha, pantalla, this::log, estado ->
                 SwingUtilities.invokeLater(() -> {
-                    // El socket se cerró (el control "regresó" al cruzar el
-                    // borde de vuelta). El modo Rey sigue activo: el hook
-                    // sigue registrado y el usuario puede volver a cruzar
-                    // el borde para reconectar, así que NO tocamos reyActivo
-                    // ni el texto del botón aquí.
-                    setEstado(EstadoConexion.ESPERANDO, "Rey activo — lleva el mouse al borde para conectar");
-                })
-        );
+                    if (actual != generacion || !reyActivo || parando) return;
+                    switch (estado) {
+                        case REMOTO -> setEstado(EstadoConexion.ACTIVO, "Control remoto activo");
+                        case CONECTANDO -> setEstado(EstadoConexion.ESPERANDO, "Conectando...");
+                        case ERROR -> setEstado(EstadoConexion.INACTIVO, "Desconectado/error - control local; vuelve al borde");
+                        default -> setEstado(EstadoConexion.ESPERANDO, "Control local - listo para cruzar el borde");
+                    }
+                }));
 
         try {
-            GlobalScreen.registerNativeHook();
+            if (!GlobalScreen.isNativeHookRegistered()) GlobalScreen.registerNativeHook();
             cliente.iniciarHandlers();
             reyActivo = true;
+            bloquearConfig(true);
             setEstado(EstadoConexion.ESPERANDO, "Rey activo — lleva el mouse al borde para conectar");
             btnAccion.setText("DETENER");
             log("Modo Rey iniciado. Servidor: " + ip + ":" + puerto);
         } catch (Exception e) {
+            detenerModoRey();
             log("Error: " + e.getMessage());
         }
     }
 
-    private void detenerModoRey() {
-        if (cliente != null) {
-            cliente.detenerHandlers();
-            if (cliente.isConectado()) {
-                cliente.desconectar();
+    private void detenerModoRey() { detenerComponentes(false); }
+
+    private void detenerComponentes(boolean cerrar) {
+        cerrarVentana |= cerrar;
+        if (cierreEnCurso) return;
+        generacion++; reyActivo = false; parando = true; cierreEnCurso = true;
+        final Cliente anteriorCliente = cliente;
+        final Servidor anteriorServidor = servidor;
+        if (anteriorCliente != null) anteriorCliente.detenerHandlers();
+        if (anteriorServidor != null) anteriorServidor.detener();
+        bloquearConfig(true); btnAccion.setEnabled(false);
+        setEstado(EstadoConexion.ESPERANDO, "Control local - finalizando conexiones...");
+        new SwingWorker<Boolean, Void>() {
+            @Override protected Boolean doInBackground() {
+                boolean terminado = true;
+                if (anteriorCliente != null) {
+                    try { if (GlobalScreen.isNativeHookRegistered()) GlobalScreen.unregisterNativeHook(); }
+                    catch (Exception e) { log("Error retirando hook: " + e.getMessage()); terminado = false; }
+                    terminado &= anteriorCliente.esperarDetenido();
+                }
+                if (anteriorServidor != null) terminado &= anteriorServidor.esperarDetenido();
+                return terminado;
             }
-        }
-        cliente   = null;
-        reyActivo = false;
-        setEstado(EstadoConexion.INACTIVO, "Desconectado");
-        btnAccion.setText("CONECTAR");
-        log("Modo Rey detenido.");
+            @Override protected void done() {
+                boolean terminado = false;
+                try { terminado = get(); } catch (Exception e) { log("Error de cierre: " + e.getMessage()); }
+                cierreEnCurso = false;
+                if (cerrarVentana && terminado) { dispose(); System.exit(0); return; }
+                btnAccion.setEnabled(true);
+                if (terminado) {
+                    cliente = null; servidor = null; parando = false;
+                    bloquearConfig(false);
+                    setEstado(EstadoConexion.INACTIVO, "Control local - limpieza terminada");
+                    btnAccion.setText(modoRey ? "CONECTAR" : "INICIAR SERVIDOR");
+                } else {
+                    setEstado(EstadoConexion.INACTIVO, "Cierre incompleto - revisar registro");
+                    btnAccion.setText("VERIFICAR CIERRE");
+                    // Conservar objetos; nunca iniciar otra instancia encima de hilos antiguos.
+                }
+            }
+        }.execute();
+    }
+
+    private void bloquearConfig(boolean bloquear) {
+        btnRey.setEnabled(!bloquear); btnEsclavo.setEnabled(!bloquear);
+        txtIp.setEnabled(!bloquear && modoRey); txtPuerto.setEnabled(!bloquear);
+        btnIzquierda.setEnabled(!bloquear); btnDerecha.setEnabled(!bloquear);
+        btnBuscarIp.setEnabled(!bloquear && modoRey);
+        if (!bloquear) btnBuscarIp.setText("Buscar");
     }
 
     private void iniciarServidor() {
@@ -388,13 +441,25 @@ public class Main extends JFrame {
         try { puerto = Integer.parseInt(txtPuerto.getText().trim()); }
         catch (NumberFormatException e) { log("Puerto invalido"); return; }
 
-        servidor = new Servidor(puerto, !servidorDerecha, this::log);
+        if (puerto < 1 || puerto > 65535) { log("Puerto invalido"); return; }
+        final long actual = ++generacion;
+        servidor = new Servidor(puerto, secundariaALaDerecha, this::log, estado ->
+                SwingUtilities.invokeLater(() -> {
+                    if (actual != generacion || servidor == null || parando) return;
+                    if (estado == Servidor.Estado.REMOTO)
+                        setEstado(EstadoConexion.ACTIVO, "Servidor - control remoto activo");
+                    else if (estado == Servidor.Estado.ESPERANDO)
+                        setEstado(EstadoConexion.ESPERANDO, "Servidor listo - esperando cliente");
+                    else setEstado(EstadoConexion.INACTIVO, "Servidor detenido/error");
+                }));
         try {
             servidor.iniciar();
+            bloquearConfig(true);
             setEstado(EstadoConexion.ESPERANDO, "Esclavo activo en :" + puerto + " — esperando cliente");
             btnAccion.setText("DETENER SERVIDOR");
         } catch (Exception e) {
             log("Error iniciando servidor: " + e.getMessage());
+            detenerComponentes(false);
         }
     }
 
@@ -425,35 +490,8 @@ public class Main extends JFrame {
             logArea.append(String.format("[%02d:%02d:%02d] %s%n",
                     t.getHour(), t.getMinute(), t.getSecond(), msg));
             logArea.setCaretPosition(logArea.getDocument().getLength());
-            actualizarSemaforoPorLog(msg);
+
         });
-    }
-
-    /**
-     * Cliente.java y Servidor.java avisan eventos de conexión real (control
-     * cruzando de una PC a otra) únicamente a través de mensajes de texto
-     * por el logger, no por un callback de estado dedicado. Para no tener
-     * que modificar esas clases, detectamos aquí las frases clave que ya
-     * emiten y las traducimos al color del semáforo. Si en algún momento
-     * cambia el texto exacto de esos logs en Cliente.java o Servidor.java,
-     * hay que actualizar también las frases acá.
-     */
-    private void actualizarSemaforoPorLog(String msg) {
-        if (!reyActivo && (servidor == null || !servidor.isCorriendo())) return;
-
-        if (msg.startsWith("Conectado a ")) {
-            // Cliente: el socket conectó, el control está activo
-            setEstado(EstadoConexion.ACTIVO, "Rey controlando");
-        } else if (msg.equals("Control regresado por el servidor")) {
-            setEstado(EstadoConexion.ESPERANDO, "Rey activo — lleva el mouse al borde para conectar");
-        } else if (msg.startsWith("Cliente conectado desde ")) {
-            // Servidor: llegó un cliente, el control está activo
-            setEstado(EstadoConexion.ACTIVO, "Esclavo activo — control en uso");
-        } else if (msg.equals("Cliente libero el control.") || msg.equals("Conexion cerrada.")) {
-            if (servidor != null && servidor.isCorriendo()) {
-                setEstado(EstadoConexion.ESPERANDO, "Esclavo activo — esperando cliente");
-            }
-        }
     }
 
     private void detectarIpLocal() {

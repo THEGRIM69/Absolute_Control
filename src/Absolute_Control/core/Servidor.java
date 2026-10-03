@@ -9,99 +9,215 @@ import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.function.Consumer;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.nio.charset.StandardCharsets;
 
 public class Servidor {
 
     private final int             puerto;
-    private final boolean         clienteALaDerecha;
+    private final boolean         secundariaALaDerecha;
     private final Consumer<String> logger;
 
-    private ServerSocket         serverSocket;
-    private volatile boolean     corriendo = false;
-    private volatile boolean     activo    = false;
-    private static PrintWriter   salida;
-    private static Robot         robot;
-    private static int           anchoServidor;
-    private static int           altoServidor;
-
-    // Responde a broadcasts UDP de clientes buscando este servidor en la
-    // red local, para que el usuario no tenga que escribir la IP a mano.
+    public enum Estado { ESPERANDO, REMOTO, DETENIDO, ERROR }
+    private static final int SESSION_IDLE_TIMEOUT_MS = 4000;
+    private final Object lock = new Object();
+    private final Consumer<Estado> onEstado;
+    private volatile boolean corriendo, paradaTerminada = true;
+    private ServerSocket serverSocket;
+    private Thread hiloServidor, hiloParada;
+    private Sesion sesion;
+    private Robot robot;
+    private GeometriaPantalla pantalla;
     private final Discovery discovery = new Discovery();
 
-    public Servidor(int puerto, boolean clienteALaDerecha, Consumer<String> logger) {
-        this.puerto            = puerto;
-        this.clienteALaDerecha = clienteALaDerecha;
-        this.logger            = logger;
+    private static class Sesion {
+        final Socket socket;
+        final AtomicBoolean cierreSolicitado = new AtomicBoolean();
+        final CountDownLatch finLimpieza = new CountDownLatch(1);
+        final Object entradaLock = new Object(), salidaLock = new Object();
+        final Set<Integer> teclas = new HashSet<>(), botones = new HashSet<>();
+        // Geometria de la transicion, protegida por entradaLock; no altera el ciclo de cierre.
+        boolean mouseInicializado, secundariaALaDerecha, transicionConAltura;
+        volatile boolean limpiezaTerminada;
+        BufferedReader entrada;
+        PrintWriter salida;
+        Thread monitor, lector;
+        volatile Thread limpieza;
+        Sesion(Socket socket) { this.socket = socket; }
+    }
+
+    public Servidor(int puerto, boolean secundariaALaDerecha, Consumer<String> logger, Consumer<Estado> onEstado) {
+        this.puerto = puerto; this.secundariaALaDerecha = secundariaALaDerecha;
+        this.logger = logger; this.onEstado = onEstado;
     }
 
     public void iniciar() throws Exception {
-        robot = new Robot();
-        Dimension pantalla = Toolkit.getDefaultToolkit().getScreenSize();
-        anchoServidor = pantalla.width;
-        altoServidor  = pantalla.height;
-
-        serverSocket = new ServerSocket(puerto);
-        corriendo    = true;
-
-        Thread hilo = new Thread(this::loop);
-        hilo.setDaemon(true);
-        hilo.start();
-
-        discovery.iniciarResponder(puerto, logger);
-
-        logger.accept("Servidor iniciado en puerto " + puerto);
-        logger.accept("Pantalla: " + anchoServidor + "x" + altoServidor);
-    }
-
-    private void loop() {
-        while (corriendo) {
-            try {
-                logger.accept("Esperando cliente...");
-                Socket cliente = serverSocket.accept();
-                logger.accept("Cliente conectado desde " + cliente.getInetAddress());
-
-                salida = new PrintWriter(cliente.getOutputStream(), true);
-                activo = true;
-
-                Thread monitor = new Thread(this::monitorearBorde);
-                monitor.setDaemon(true);
-                monitor.start();
-
-                BufferedReader entrada = new BufferedReader(
-                        new InputStreamReader(cliente.getInputStream()));
-                String linea;
-
-                while ((linea = entrada.readLine()) != null) {
-                    if (linea.equals("LIBERAR")) {
-                        logger.accept("Cliente libero el control.");
-                        activo = false;
-                        break;
-                    }
-                    procesarMensaje(linea);
-                }
-
-                activo = false;
-                salida = null;
-                entrada.close();
-                cliente.close();
-                logger.accept("Conexion cerrada.");
-
-            } catch (Exception e) {
-                if (corriendo) logger.accept("Error: " + e.getMessage());
-            }
+        synchronized (lock) {
+            if (corriendo) return;
+            if (!paradaTerminada || (hiloServidor != null && hiloServidor.isAlive())
+                    || (hiloParada != null && hiloParada.isAlive()))
+                throw new IllegalStateException("Parada anterior incompleta; no reutilizar servidor");
+            robot = new Robot();
+            pantalla = geometriaActual();
+            serverSocket = new ServerSocket(puerto);
+            paradaTerminada = false; hiloParada = null; corriendo = true;
+            discovery.iniciarResponder(puerto, logger);
+            onEstado.accept(Estado.ESPERANDO);
+            hiloServidor = new Thread(this::loop, "kvm-servidor");
+            hiloServidor.setDaemon(true); hiloServidor.start();
+            logger.accept("Servidor iniciado en puerto " + puerto);
         }
     }
 
-    private void procesarMensaje(String linea) {
+    private void loop() {
+        try {
+            while (corriendo) {
+                Sesion actual = null;
+                try {
+                    actual = new Sesion(serverSocket.accept());
+                    synchronized (lock) {
+                        sesion = actual;
+                        if (corriendo) prepararSesion(actual);
+                    }
+                } catch (Exception e) {
+                    if (corriendo) logger.accept("Error de sesion: " + e.getMessage());
+                    if (actual != null) cerrarSesion(actual);
+                }
+                if (actual != null) {
+                    if (!corriendo) cerrarSesion(actual);
+                    // Nunca aceptar otra sesion antes de finalizar TODA la limpieza anterior.
+                    while (corriendo && !actual.finLimpieza.await(100, TimeUnit.MILLISECONDS)) {}
+                    if (!corriendo) cerrarSesion(actual);
+                    if (corriendo) Cliente.finalizarHilo(actual.limpieza, logger);
+                    if (corriendo && !actual.limpiezaTerminada) {
+                        logger.accept("Limpieza de sesion incompleta; servidor se detiene");
+                        break;
+                    }
+                    synchronized (lock) {
+                        if (sesion == actual && actual.limpiezaTerminada) sesion = null;
+                    }
+                    if (corriendo) onEstado.accept(Estado.ESPERANDO);
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally { detener(); }
+    }
+
+    // Bajo lock: no se puede publicar/arrancar un hilo despues de solicitar cierre.
+    private void prepararSesion(Sesion s) throws Exception {
+        if (s.cierreSolicitado.get()) return;
+        s.socket.setTcpNoDelay(true); s.socket.setSoTimeout(SESSION_IDLE_TIMEOUT_MS);
+        s.entrada = new BufferedReader(new InputStreamReader(s.socket.getInputStream(), StandardCharsets.UTF_8));
+        s.salida = new PrintWriter(new java.io.OutputStreamWriter(s.socket.getOutputStream(), StandardCharsets.UTF_8), true);
+        s.monitor = new Thread(() -> monitorearBorde(s), "kvm-borde");
+        s.lector = new Thread(() -> atender(s), "kvm-recibir-servidor");
+        s.monitor.setDaemon(true); s.lector.setDaemon(true);
+        s.monitor.start(); s.lector.start();
+        onEstado.accept(Estado.REMOTO);
+        logger.accept("Cliente conectado desde " + s.socket.getInetAddress());
+    }
+
+    private void atender(Sesion s) {
+        try {
+            String linea;
+            while (!s.cierreSolicitado.get() && (linea = s.entrada.readLine()) != null) {
+                if (linea.equals("LIBERAR")) break;
+                if (linea.equals("PING")) {
+                    // Compatibilidad con emisores sin ENTRAR: altura central y lado local configurado.
+                    synchronized (s.entradaLock) {
+                        if (!s.cierreSolicitado.get() && !s.mouseInicializado)
+                            inicializarMouse(s, secundariaALaDerecha, 0.5, false);
+                    }
+                    if (!enviarRespuesta(s, "PONG")) break;
+                } else synchronized (s.entradaLock) {
+                    if (!s.cierreSolicitado.get()) procesarMensaje(s, linea);
+                }
+            }
+        } catch (Exception e) {
+            if (!s.cierreSolicitado.get()) logger.accept("Error de sesion: " + e.getMessage());
+        } finally { cerrarSesion(s); }
+    }
+
+    private boolean enviarRespuesta(Sesion s, String mensaje) {
+        synchronized (s.salidaLock) {
+            if (s.cierreSolicitado.get()) return false;
+            s.salida.println(mensaje);
+            return !s.salida.checkError();
+        }
+    }
+
+    private void cerrarSesion(Sesion s) {
+        synchronized (lock) {
+            if (!s.cierreSolicitado.compareAndSet(false, true)) return;
+            s.limpieza = new Thread(() -> limpiar(s), "kvm-limpiar-servidor");
+            s.limpieza.setDaemon(true); s.limpieza.start();
+        }
+    }
+
+    private void limpiar(Sesion s) {
+        try {
+            Consumer<String> logSesion = msg -> logger.accept("Sesion servidor "
+                    + Integer.toHexString(System.identityHashCode(s)) + ": " + msg);
+            Cliente.cerrarSocket(s.socket, s.socket::isClosed, logSesion);
+            if (s.monitor != null) s.monitor.interrupt();
+            if (s.lector != null) s.lector.interrupt();
+            Cliente.finalizarHilo(s.monitor, logSesion);
+            Cliente.finalizarHilo(s.lector, logSesion);
+            liberarEntradas(s, logSesion);
+            Cliente.cerrarStream(s.entrada, logSesion);
+            Cliente.cerrarStream(s.salida, logSesion);
+            s.limpiezaTerminada = true;
+        } finally { s.finLimpieza.countDown(); }
+    }
+
+    private void liberarEntradas(Sesion s, Consumer<String> logSesion) {
+        boolean interrumpido = false, avisado = false;
+        while (true) {
+            synchronized (s.entradaLock) {
+                for (var teclas = s.teclas.iterator(); teclas.hasNext();) {
+                    int tecla = teclas.next();
+                    try { robot.keyRelease(tecla); teclas.remove(); }
+                    catch (RuntimeException e) {
+                        if (!avisado) logSesion.accept("Liberacion pendiente de tecla " + tecla + ": " + e.getMessage());
+                    }
+                }
+                for (var botones = s.botones.iterator(); botones.hasNext();) {
+                    int boton = botones.next();
+                    try { robot.mouseRelease(boton); botones.remove(); }
+                    catch (RuntimeException e) {
+                        if (!avisado) logSesion.accept("Liberacion pendiente de boton " + boton + ": " + e.getMessage());
+                    }
+                }
+                if (s.teclas.isEmpty() && s.botones.isEmpty()) break;
+            }
+            avisado = true;
+            try { Thread.sleep(100); } catch (InterruptedException e) { interrumpido = true; }
+        }
+        if (interrumpido) Thread.currentThread().interrupt();
+    }
+
+    private void procesarMensaje(Sesion s, String linea) {
         String[] p = linea.split(",", 3);
+
+        if (p[0].equals("ENTRAR")) {
+            if (p.length != 3 || (!p[1].equals("DERECHA") && !p[1].equals("IZQUIERDA")))
+                throw new IllegalArgumentException("ENTRAR invalido");
+            double altura = GeometriaPantalla.validarAltura(Double.parseDouble(p[2]));
+            if (!s.mouseInicializado) inicializarMouse(s, p[1].equals("DERECHA"), altura, true);
+            return;
+        }
+        if (!s.mouseInicializado) inicializarMouse(s, secundariaALaDerecha, 0.5, false);
 
         if (p[0].equals("D") && p.length == 3) {
             int dx = Integer.parseInt(p[1]);
             int dy = Integer.parseInt(p[2]);
-            Point pos = MouseInfo.getPointerInfo().getLocation();
-            int nx = Math.max(0, Math.min(anchoServidor - 1, pos.x + dx));
-            int ny = Math.max(0, Math.min(altoServidor  - 1, pos.y + dy));
-            robot.mouseMove(nx, ny);
+            Point destino = pantalla.desplazar(posicionActual(), dx, dy);
+            robot.mouseMove(destino.x, destino.y);
         }
         else if (p[0].equals("A") && p.length == 3) {
             robot.mouseMove(Integer.parseInt(p[1]), Integer.parseInt(p[2]));
@@ -109,89 +225,155 @@ public class Servidor {
         else if (p[0].equals("C") && p.length == 3) {
             int b = Integer.parseInt(p[2]);
             int m = b == 1 ? InputEvent.BUTTON1_DOWN_MASK : InputEvent.BUTTON3_DOWN_MASK;
-            if (p[1].equals("PRESIONAR")) robot.mousePress(m);
-            else robot.mouseRelease(m);
+            if (p[1].equals("PRESIONAR")) { s.botones.add(m); robot.mousePress(m); }
+            else { robot.mouseRelease(m); s.botones.remove(m); }
         }
         else if (p[0].equals("W") && p.length == 2) {
             robot.mouseWheel(Integer.parseInt(p[1]));
         }
         else if (p[0].equals("T") && p.length == 2) {
-            typeCharacter(p[1].charAt(0));
+            typeCharacter(s, p[1].charAt(0));
         }
         else if (p[0].equals("K") && p.length == 3) {
             int kc = convertirKeyCode(Integer.parseInt(p[2]));
             if (kc != -1) {
                 try {
-                    if (p[1].equals("PRESIONAR")) robot.keyPress(kc);
-                    else robot.keyRelease(kc);
+                    if (p[1].equals("PRESIONAR")) { s.teclas.add(kc); robot.keyPress(kc); }
+                    else { robot.keyRelease(kc); s.teclas.remove(kc); }
                 } catch (IllegalArgumentException ignored) {}
             }
         }
     }
 
-    private void monitorearBorde() {
-        // El borde de regreso es el opuesto al lado donde está el cliente
-        int bordeRegreso = clienteALaDerecha ? 0 : anchoServidor - 1;
-        while (activo && salida != null) {
-            Point pos = MouseInfo.getPointerInfo().getLocation();
-            boolean enBorde = clienteALaDerecha
-                    ? pos.x <= 2
-                    : pos.x >= anchoServidor - 3;
-            if (enBorde) {
-                logger.accept("Borde detectado - regresando control");
-                salida.println("REGRESAR");
-                activo = false;
-                robot.mouseMove(anchoServidor / 2, altoServidor / 2);
-                break;
+    // Bajo entradaLock: la posicion se aplica antes de habilitar el borde de regreso.
+    private void inicializarMouse(Sesion s, boolean secundariaALaDerecha, double altura, boolean conAltura) {
+        Point entrada = pantalla.entradaSecundaria(secundariaALaDerecha, altura);
+        robot.mouseMove(entrada.x, entrada.y);
+        s.secundariaALaDerecha = secundariaALaDerecha;
+        s.transicionConAltura = conAltura;
+        s.mouseInicializado = true;
+    }
+
+    private void monitorearBorde(Sesion s) {
+        try {
+            while (!s.cierreSolicitado.get() && corriendo) {
+                String regreso = null;
+                synchronized (s.entradaLock) {
+                    if (s.mouseInicializado && !s.cierreSolicitado.get()) {
+                        Point pos = posicionActual();
+                        if (pantalla.enBordeRegreso(pos.x, s.secundariaALaDerecha))
+                            regreso = s.transicionConAltura ? "REGRESAR," + pantalla.alturaRelativa(pos.y) : "REGRESAR";
+                    }
+                }
+                if (regreso != null) {
+                    enviarRespuesta(s, regreso);
+                    cerrarSesion(s);
+                    return;
+                }
+                Thread.sleep(10);
             }
-            try { Thread.sleep(10); } catch (InterruptedException ignored) {}
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            if (!s.cierreSolicitado.get()) cerrarSesion(s);
         }
     }
 
-    private static void typeCharacter(char c) {
-        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ') {
-            int vk = KeyEvent.getExtendedKeyCodeForChar(c);
-            if (vk != KeyEvent.VK_UNDEFINED) {
-                try { robot.keyPress(vk); robot.keyRelease(vk); return; }
-                catch (IllegalArgumentException ignored) {}
-            }
-        }
-        if (c >= 'A' && c <= 'Z') {
+    protected Point posicionActual() { return MouseInfo.getPointerInfo().getLocation(); }
+    protected GeometriaPantalla geometriaActual() { return GeometriaPantalla.actual(); }
+
+    private boolean presionarTemporal(Sesion s, int tecla) {
+        if (s.teclas.contains(tecla)) return false;
+        s.teclas.add(tecla);
+        robot.keyPress(tecla);
+        return true;
+    }
+
+    private void liberarTemporal(Sesion s, int tecla, boolean propia) {
+        if (propia) { robot.keyRelease(tecla); s.teclas.remove(tecla); }
+    }
+
+    private void typeCharacter(Sesion s, char c) {
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' || (c >= 'A' && c <= 'Z')) {
             int vk = KeyEvent.getExtendedKeyCodeForChar(Character.toLowerCase(c));
             if (vk != KeyEvent.VK_UNDEFINED) {
+                boolean shift = false, tecla = false;
                 try {
-                    robot.keyPress(KeyEvent.VK_SHIFT);
-                    robot.keyPress(vk); robot.keyRelease(vk);
-                    robot.keyRelease(KeyEvent.VK_SHIFT);
+                    if (c >= 'A' && c <= 'Z') shift = presionarTemporal(s, KeyEvent.VK_SHIFT);
+                    tecla = presionarTemporal(s, vk);
                     return;
-                } catch (IllegalArgumentException ignored) {}
+                } catch (IllegalArgumentException ignored) {
+                } finally {
+                    liberarTemporal(s, vk, tecla);
+                    liberarTemporal(s, KeyEvent.VK_SHIFT, shift);
+                }
             }
         }
-        typeViaClipboard(c);
+        typeViaClipboard(s, c);
     }
 
-    private static void typeViaClipboard(char c) {
+    private void typeViaClipboard(Sesion s, char c) {
         java.awt.datatransfer.Clipboard cb = Toolkit.getDefaultToolkit().getSystemClipboard();
         java.awt.datatransfer.Transferable anterior = null;
         try { anterior = cb.getContents(null); } catch (Exception ignored) {}
-        java.awt.datatransfer.StringSelection sel =
-                new java.awt.datatransfer.StringSelection(String.valueOf(c));
-        cb.setContents(sel, sel);
-        robot.keyPress(KeyEvent.VK_CONTROL);
-        robot.keyPress(KeyEvent.VK_V);
-        robot.keyRelease(KeyEvent.VK_V);
-        robot.keyRelease(KeyEvent.VK_CONTROL);
-        try { Thread.sleep(15); } catch (InterruptedException ignored) {}
-        if (anterior != null) {
-            try { cb.setContents(anterior, null); } catch (Exception ignored) {}
+        java.awt.datatransfer.StringSelection sel = new java.awt.datatransfer.StringSelection(String.valueOf(c));
+        boolean ctrl = false, tecla = false;
+        try {
+            cb.setContents(sel, sel);
+            ctrl = presionarTemporal(s, KeyEvent.VK_CONTROL);
+            tecla = presionarTemporal(s, KeyEvent.VK_V);
+        } finally {
+            liberarTemporal(s, KeyEvent.VK_V, tecla);
+            liberarTemporal(s, KeyEvent.VK_CONTROL, ctrl);
+            try { Thread.sleep(15); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            if (anterior != null) {
+                try { cb.setContents(anterior, null); } catch (Exception ignored) {}
+            }
         }
     }
 
+    /** Solicita parada y retorna inmediatamente; las esperas son de hilo de fondo. */
     public void detener() {
-        corriendo = false;
+        synchronized (lock) {
+            corriendo = false;
+            if (hiloParada != null) return;
+            hiloParada = new Thread(this::limpiarServidor, "kvm-detener-servidor");
+            hiloParada.setDaemon(true); hiloParada.start();
+        }
+    }
+
+    private void limpiarServidor() {
+        Sesion actual;
+        ServerSocket escucha;
+        Thread servidor;
+        synchronized (lock) { actual = sesion; escucha = serverSocket; servidor = hiloServidor; }
+        if (escucha != null) Cliente.cerrarSocket(escucha, escucha::isClosed, logger);
+        if (actual != null) cerrarSesion(actual);
         discovery.detenerResponder();
-        try { if (serverSocket != null) serverSocket.close(); } catch (Exception ignored) {}
-        logger.accept("Servidor detenido.");
+        discovery.finalizarResponder();
+        if (servidor != null) servidor.interrupt();
+        Cliente.finalizarHilo(servidor, logger);
+        // Una aceptacion concurrente pudo publicar una sesion antes de corriendo=false.
+        synchronized (lock) { if (sesion != null) actual = sesion; }
+        if (actual != null) {
+            cerrarSesion(actual);
+            Cliente.finalizarHilo(actual.limpieza, logger);
+        }
+        boolean terminado = discovery.isDetenido() && (actual == null || actual.limpiezaTerminada);
+        synchronized (lock) {
+            paradaTerminada = terminado;
+            if (terminado) { sesion = null; serverSocket = null; }
+        }
+        onEstado.accept(terminado ? Estado.DETENIDO : Estado.ERROR);
+        logger.accept(terminado ? "Servidor detenido; limpieza terminada" : "Parada incompleta; no reutilizar servidor");
+    }
+
+    public boolean esperarDetenido() {
+        if (javax.swing.SwingUtilities.isEventDispatchThread())
+            throw new IllegalStateException("Esperar cierre fuera de Swing");
+        Thread parada;
+        synchronized (lock) { parada = hiloParada; }
+        return Cliente.esperarHilo(parada, logger) && paradaTerminada;
     }
 
     public boolean isCorriendo() { return corriendo; }

@@ -29,7 +29,9 @@ public class Discovery {
     // ── Lado Servidor: escucha y responde ──────────────────────────
 
     private DatagramSocket   socketEscucha;
-    private volatile boolean escuchando = false;
+    private Thread hiloResponder;
+    private java.util.concurrent.atomic.AtomicBoolean cierreSocket;
+    private Consumer<String> loggerResponder;
 
     /**
      * Arranca un hilo daemon que escucha broadcasts de descubrimiento
@@ -38,64 +40,73 @@ public class Discovery {
      * @param puertoTcp puerto TCP real en el que está el ServerSocket
      * @param logger    callback de log (puede ser null)
      */
-    public void iniciarResponder(int puertoTcp, Consumer<String> logger) {
-        Thread hilo = new Thread(() -> {
+    public synchronized void iniciarResponder(int puertoTcp, Consumer<String> logger) {
+        if (socketEscucha != null && !socketEscucha.isClosed()) return;
+        if (hiloResponder != null && hiloResponder.isAlive()) {
+            if (logger != null) logger.accept("Discovery anterior sigue vivo; no reutilizar");
+            return;
+        }
+        loggerResponder = logger;
+        final java.util.concurrent.atomic.AtomicBoolean cerrado = new java.util.concurrent.atomic.AtomicBoolean();
+        DatagramSocket nuevo = null;
+        final DatagramSocket socket;
+        try {
+            nuevo = new DatagramSocket(DISCOVERY_PORT);
+            nuevo.setBroadcast(true);
+            socket = nuevo;
+        } catch (Exception e) {
+            if (nuevo != null) nuevo.close();
+            if (logger != null) logger.accept("Discovery error: " + e.getMessage());
+            return;
+        }
+        socketEscucha = socket; cierreSocket = cerrado;
+        hiloResponder = new Thread(() -> {
             try {
-                socketEscucha = new DatagramSocket(DISCOVERY_PORT);
-                socketEscucha.setBroadcast(true);
-                escuchando = true;
                 if (logger != null) logger.accept("Discovery UDP escuchando en puerto " + DISCOVERY_PORT);
-
                 byte[] buffer = new byte[256];
-                while (escuchando) {
+                while (!socket.isClosed()) {
                     DatagramPacket recibido = new DatagramPacket(buffer, buffer.length);
-                    try {
-                        socketEscucha.receive(recibido);
-                    } catch (SocketException se) {
-                        break; // socket cerrado al detener
-                    }
-
-                    String mensaje = new String(
-                            recibido.getData(), 0, recibido.getLength()).trim();
-
+                    socket.receive(recibido);
+                    String mensaje = new String(recibido.getData(), 0, recibido.getLength()).trim();
                     if (mensaje.equals(DISCOVER_MSG)) {
-                        InetAddress origen = recibido.getAddress();
-                        int         puertoOrigen = recibido.getPort();
-
-                        String respuesta = RESPONSE_PREFIX + puertoTcp;
-                        byte[] datosResp = respuesta.getBytes();
-                        DatagramPacket paqueteResp = new DatagramPacket(
-                                datosResp, datosResp.length, origen, puertoOrigen);
-                        socketEscucha.send(paqueteResp);
-
-                        if (logger != null) {
-                            logger.accept("Discovery: respondido a " + origen.getHostAddress());
-                        }
+                        byte[] datos = (RESPONSE_PREFIX + puertoTcp).getBytes();
+                        socket.send(new DatagramPacket(datos, datos.length, recibido.getAddress(), recibido.getPort()));
                     }
                 }
             } catch (Exception e) {
-                if (escuchando && logger != null) {
-                    logger.accept("Discovery error: " + e.getMessage());
-                }
-            }
-        });
-        hilo.setDaemon(true);
-        hilo.start();
+                if (!socket.isClosed() && logger != null) logger.accept("Discovery error: " + e.getMessage());
+            } finally { if (cerrado.compareAndSet(false, true)) socket.close(); }
+        }, "kvm-discovery");
+        hiloResponder.setDaemon(true);
+        hiloResponder.start();
     }
 
-    /** Detiene el listener de discovery del lado servidor. */
-    public void detenerResponder() {
-        escuchando = false;
-        if (socketEscucha != null) {
-            socketEscucha.close();
+    public synchronized void detenerResponder() {
+        if (socketEscucha != null && cierreSocket.compareAndSet(false, true)) socketEscucha.close();
+        if (hiloResponder != null) hiloResponder.interrupt();
+        // En la app lo llama el trabajador de parada. Nunca hacer join en Swing.
+        if (!javax.swing.SwingUtilities.isEventDispatchThread())
+            Cliente.esperarHilo(hiloResponder, mensaje -> { if (loggerResponder != null) loggerResponder.accept(mensaje); });
+        if (hiloResponder == null || !hiloResponder.isAlive()) { socketEscucha = null; hiloResponder = null; }
+    }
+
+    public synchronized boolean isDetenido() {
+        return (socketEscucha == null || socketEscucha.isClosed())
+                && (hiloResponder == null || !hiloResponder.isAlive());
+    }
+
+    // El propietario de la parada continua despues del timeout de la primera comprobacion.
+    void finalizarResponder() {
+        Thread anterior;
+        Consumer<String> log;
+        synchronized (this) { anterior = hiloResponder; log = loggerResponder; }
+        Cliente.finalizarHilo(anterior, mensaje -> { if (log != null) log.accept(mensaje); });
+        synchronized (this) {
+            if (hiloResponder == anterior) { socketEscucha = null; hiloResponder = null; }
         }
     }
 
-    // ── Lado Cliente: pregunta y espera respuesta ──────────────────
-
-    /**
-     * Resultado de una búsqueda de servidor exitosa.
-     */
+    /** Resultado de una busqueda UDP. */
     public static class ServidorEncontrado {
         public final String ip;
         public final int    puertoTcp;
