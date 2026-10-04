@@ -61,7 +61,7 @@ ENTRAR,IZQUIERDA,0.7
 
 El segundo campo indica dónde está la secundaria; el tercero es un número finito de `[0,1]`. Se envía una de esas variantes por sesión antes de PING y los deltas. El servidor coloca el cursor y habilita la comprobación del borde.
 
-El regreso actual puede ser `REGRESAR,0.8`. El cliente también acepta `REGRESAR` sin altura, usando la altura guardada al entrar. Si un emisor no envía `ENTRAR`, el servidor inicializa con su configuración local y altura `0.5` al recibir PING u otro comando de entrada, y usa regreso sin altura. Esto no constituye negociación de versiones.
+El regreso actual puede ser `REGRESAR,0.8`. El cliente también acepta `REGRESAR` sin altura, usando la altura guardada al entrar. `PING` solo comprueba la sesión y obtiene `PONG`: no inicializa ni mueve el cursor. Si un emisor no envía `ENTRAR`, el servidor conserva compatibilidad inicializando con su configuración local y altura `0.5` al recibir el primer comando de entrada real, y usa regreso sin altura. Esto no constituye negociación de versiones.
 
 ## Pruebas
 

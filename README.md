@@ -312,6 +312,8 @@ Cliente ◄── PONG ─── Servidor
 
 Su función es detectar conexiones que aparentemente permanecen abiertas aunque la otra computadora haya desaparecido o dejado de responder.
 
+PING/PONG no inicializa ni modifica la posición del cursor.
+
 Este mecanismo **no realiza reconexión automática**.
 
 Cuando una sesión muere:

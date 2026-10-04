@@ -59,7 +59,7 @@ Constantes verificadas en [Cliente.java](../src/Absolute_Control/core/Cliente.ja
 
 El escritor de la sesión da prioridad temporal a PING frente a los mensajes encolados. PONG actualiza `ultimoPong`; el vigilante cierra esa sesión si se agota el tiempo. Estos hilos se crean para una sesión activa y se detienen con su limpieza. Los valores son umbrales de programación, no garantías de latencia exacta del sistema.
 
-En la integración actual de Fase 2, PING toma `entradaLock` y puede inicializar el mouse a altura central si no se recibió `ENTRAR`. Ese bloqueo puede retrasar PONG mientras una operación de entrada esté ejecutándose; no existe un canal independiente de heartbeat.
+En la integración final de Fase 2, PING no toma `entradaLock` ni inicializa el mouse: responde PONG bajo el bloqueo de salida de la sesión. La posición remota se inicializa mediante `ENTRAR` o, para compatibilidad con emisores antiguos, mediante el primer comando de entrada real.
 
 Después de una caída se descartan eventos de enfriamiento, reposicionamientos propios y coordenadas atrasadas. Se exige un nuevo cruce válido; no hay reconexión automática. El regreso intencional con `REGRESAR` tiene la recolocación y el rearme descritos en [Fase 2](Fase-2-Transicion-Pantallas.md).
 

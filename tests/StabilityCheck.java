@@ -284,7 +284,7 @@ public class StabilityCheck {
         try(Socket socket=new Socket("127.0.0.1",port(server))) {
             socket.setSoTimeout(2000);PrintWriter out=new PrintWriter(socket.getOutputStream(),true);
             BufferedReader in=new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            out.println("PING");check("PONG".equals(in.readLine()),"Sesion para borde no inicio");
+            out.println("D,0,0");out.println("PING");check("PONG".equals(in.readLine()),"Sesion para borde no inicio");
             server.posicion=new Point(0,100);
             check("REGRESAR".equals(in.readLine()),"Borde de regreso cambio");check(in.readLine()==null,"Borde no cerro TCP");
         }

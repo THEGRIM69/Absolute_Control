@@ -128,11 +128,6 @@ public class Servidor {
             while (!s.cierreSolicitado.get() && (linea = s.entrada.readLine()) != null) {
                 if (linea.equals("LIBERAR")) break;
                 if (linea.equals("PING")) {
-                    // Compatibilidad con emisores sin ENTRAR: altura central y lado local configurado.
-                    synchronized (s.entradaLock) {
-                        if (!s.cierreSolicitado.get() && !s.mouseInicializado)
-                            inicializarMouse(s, secundariaALaDerecha, 0.5, false);
-                    }
                     if (!enviarRespuesta(s, "PONG")) break;
                 } else synchronized (s.entradaLock) {
                     if (!s.cierreSolicitado.get()) procesarMensaje(s, linea);

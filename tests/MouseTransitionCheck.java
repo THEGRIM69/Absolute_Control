@@ -156,6 +156,11 @@ public class MouseTransitionCheck {
                     BufferedReader entrada = new BufferedReader(new InputStreamReader(socket.getInputStream(),StandardCharsets.UTF_8));
                     PrintWriter salida = new PrintWriter(socket.getOutputStream(),true,StandardCharsets.UTF_8);
                     sinRespuesta(entrada); // Cursor anterior sobre el borde: no se debe devolver antes de ENTRAR.
+                    Point cursorAntesDePing = servidor.cursor.get();
+                    salida.println("PING");
+                    socket.setSoTimeout(2000); check("PONG".equals(entrada.readLine()),"PING/PONG no respondio antes de ENTRAR");
+                    check(servidor.cursor.get().equals(cursorAntesDePing),"PING movio el cursor antes de ENTRAR");
+                    socket.setSoTimeout(100); sinRespuesta(entrada);
                     salida.println("ENTRAR,"+(derecha ? "DERECHA" : "IZQUIERDA")+",0.7"); salida.println("PING");
                     socket.setSoTimeout(2000); check("PONG".equals(entrada.readLine()),"PING/PONG no respondio tras ENTRAR");
                     check(servidor.cursor.get().equals(pantalla.entradaSecundaria(derecha,0.7)),"ENTRAR no coloco altura/margen");
@@ -172,7 +177,7 @@ public class MouseTransitionCheck {
                 }
             }
         }
-        System.out.println("PASS protocolo localhost: ENTRAR antes del borde, PING/PONG, margen, lado correcto y REGRESAR con altura");
+        System.out.println("PASS protocolo localhost: PING sin movimiento, ENTRAR antes del borde, margen, lado correcto y REGRESAR con altura");
     }
     static void clienteServidor() throws Exception {
         int ciclos=0;
