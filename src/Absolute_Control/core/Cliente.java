@@ -123,7 +123,7 @@ public class Cliente {
         synchronized (lock) {
             habilitado = false; actual = sesion;
         }
-        cerrarSesion(actual, Estado.DETENIDO, "Cliente detenido");
+        cerrarSesion(actual, Estado.DETENIDO, "CLIENT_STOP", "Cliente detenido");
         synchronized (lock) {
             if (dispatcher != null) { dispatcher.invalidar(); dispatcher.shutdownNow(); }
             if (mouseHandler != null) {
@@ -196,7 +196,7 @@ public class Cliente {
             }
             logger.accept("Conectado a " + ip + ":" + puerto);
         } catch (Exception e) {
-            cerrarSesion(s, Estado.ERROR, "Error al conectar: " + e.getMessage());
+            cerrarSesion(s, Estado.ERROR, "CONNECT_ERROR", detalle(e));
         }
         // El propietario de limpieza espera a este hilo antes de cerrar streams.
     }
@@ -211,12 +211,14 @@ public class Cliente {
                     if (regreso.length > 2) throw new IOException("REGRESAR invalido");
                     s.alturaRegreso = regreso.length == 2
                             ? GeometriaPantalla.validarAltura(Double.parseDouble(regreso[1])) : s.alturaEntrada;
-                    cerrarSesion(s, Estado.LOCAL, "Control regresado por el servidor"); return;
+                    cerrarSesion(s, Estado.LOCAL, "REGRESAR", linea); return;
                 }
             }
-            cerrarSesion(s, Estado.ERROR, "Servidor desconectado");
+            cerrarSesion(s, Estado.ERROR, "EOF", "Servidor desconectado");
         } catch (IOException | IllegalArgumentException e) {
-            cerrarSesion(s, Estado.ERROR, "Conexion perdida: " + e.getMessage());
+            String razon = e instanceof SocketException ? "SOCKET_RESET"
+                    : e instanceof IllegalArgumentException ? "PROTOCOL_ERROR" : "READ_ERROR";
+            cerrarSesion(s, Estado.ERROR, razon, detalle(e));
         }
     }
 
@@ -224,7 +226,7 @@ public class Cliente {
         // El mismo escritor coloca el cursor remoto antes de cualquier delta encolado.
         if (s.cerrada) return;
         s.salida.println("ENTRAR," + (secundariaALaDerecha ? "DERECHA" : "IZQUIERDA") + "," + s.alturaEntrada);
-        if (s.salida.checkError()) { cerrarSesion(s, Estado.ERROR, "Error de entrada remota"); return; }
+        if (s.salida.checkError()) { cerrarSesion(s, Estado.ERROR, "WRITE_ERROR", "ENTRAR"); return; }
         long proximoPing = System.nanoTime();
         try {
             while (!s.cerrada) {
@@ -241,7 +243,7 @@ public class Cliente {
                 if (s.cerrada) break;
                 s.salida.println(msg);
                 if (s.salida.checkError()) {
-                    cerrarSesion(s, Estado.ERROR, "Error de escritura"); break;
+                    cerrarSesion(s, Estado.ERROR, "WRITE_ERROR", "escritor TCP"); break;
                 }
             }
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
@@ -251,7 +253,8 @@ public class Cliente {
         try {
             while (!s.cerrada) {
                 if (TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - s.ultimoPong) >= HEARTBEAT_TIMEOUT_MS) {
-                    cerrarSesion(s, Estado.ERROR, "Heartbeat agotado: control local recuperado"); return;
+                    long sinPongMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - s.ultimoPong);
+                    cerrarSesion(s, Estado.ERROR, "HEARTBEAT_TIMEOUT", "sin_pong_ms=" + sinPongMs); return;
                 }
                 Thread.sleep(WATCHDOG_INTERVAL_MS);
             }
@@ -261,10 +264,10 @@ public class Cliente {
     public void desconectar() {
         Sesion s;
         synchronized (lock) { s = sesion; }
-        cerrarSesion(s, Estado.LOCAL, "Control local recuperado");
+        cerrarSesion(s, Estado.LOCAL, "LOCAL_REQUEST", "desconexion solicitada");
     }
 
-    private void cerrarSesion(Sesion s, Estado estado, String motivo) {
+    private void cerrarSesion(Sesion s, Estado estado, String razon, String detalle) {
         synchronized (lock) {
             if (s == null || sesion != s || s.cerrada) return;
             s.cerrada = true; conectado = false; pendiente = false; sesion = null;
@@ -281,7 +284,14 @@ public class Cliente {
             }
             onEstado.accept(estado);
         }
-        logger.accept(motivo);
+        logger.accept("CIERRE_SESION razon=" + razon + " lado=CLIENTE sesion="
+                + Integer.toHexString(System.identityHashCode(s))
+                + (detalle == null || detalle.isBlank() ? "" : " detalle=" + detalle));
+    }
+
+    // Conserva el punto de prueba de Fase 1.1 que simula un cierre tardio de una sesion anterior.
+    private void cerrarSesion(Sesion s, Estado estado, String detalle) {
+        cerrarSesion(s, estado, "TEST_REQUEST", detalle);
     }
 
     private void limpiar(Sesion s) {
@@ -303,7 +313,7 @@ public class Cliente {
     private void cerrarPorEvento(Sesion s) {
         synchronized (lock) {
             if (dispatcher != null && !dispatcher.esActual()) return;
-            cerrarSesion(s, Estado.LOCAL, "Control local recuperado");
+            cerrarSesion(s, Estado.LOCAL, "ESCAPE", "Escape capturado por hook global");
         }
     }
 
@@ -312,7 +322,12 @@ public class Cliente {
             if (sesion != s || !conectado || s.cerrada || (dispatcher != null && !dispatcher.esActual())) return;
             if (s.mensajes.offer(msg)) return;
         }
-        cerrarSesion(s, Estado.ERROR, "Cola de envio saturada");
+        cerrarSesion(s, Estado.ERROR, "QUEUE_SATURATION", "size=" + s.mensajes.size());
+    }
+
+    private static String detalle(Exception e) {
+        String mensaje = e.getMessage();
+        return e.getClass().getSimpleName() + (mensaje == null || mensaje.isBlank() ? "" : ": " + mensaje);
     }
 
     static boolean esperarHilo(Thread t, Consumer<String> logger) {

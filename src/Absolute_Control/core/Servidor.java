@@ -4,10 +4,13 @@ import java.awt.*;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.util.function.Consumer;
 import java.util.HashSet;
 import java.util.Set;
@@ -85,13 +88,14 @@ public class Servidor {
                     }
                 } catch (Exception e) {
                     if (corriendo) logger.accept("Error de sesion: " + e.getMessage());
-                    if (actual != null) cerrarSesion(actual);
+                    if (actual != null) cerrarSesion(actual,
+                            corriendo ? "SESSION_START_ERROR" : "SERVER_STOP", detalle(e));
                 }
                 if (actual != null) {
-                    if (!corriendo) cerrarSesion(actual);
+                    if (!corriendo) cerrarSesion(actual, "SERVER_STOP", "servidor detenido");
                     // Nunca aceptar otra sesion antes de finalizar TODA la limpieza anterior.
                     while (corriendo && !actual.finLimpieza.await(100, TimeUnit.MILLISECONDS)) {}
-                    if (!corriendo) cerrarSesion(actual);
+                    if (!corriendo) cerrarSesion(actual, "SERVER_STOP", "servidor detenido");
                     if (corriendo) Cliente.finalizarHilo(actual.limpieza, logger);
                     if (corriendo && !actual.limpiezaTerminada) {
                         logger.accept("Limpieza de sesion incompleta; servidor se detiene");
@@ -123,19 +127,26 @@ public class Servidor {
     }
 
     private void atender(Sesion s) {
+        String razon = "EOF";
+        String detalle = "cliente cerro el flujo";
         try {
             String linea;
             while (!s.cierreSolicitado.get() && (linea = s.entrada.readLine()) != null) {
-                if (linea.equals("LIBERAR")) break;
+                if (linea.equals("LIBERAR")) { razon = "LIBERAR"; detalle = null; break; }
                 if (linea.equals("PING")) {
-                    if (!enviarRespuesta(s, "PONG")) break;
+                    if (!enviarRespuesta(s, "PONG")) { razon = "WRITE_ERROR"; detalle = "PONG"; break; }
                 } else synchronized (s.entradaLock) {
                     if (!s.cierreSolicitado.get()) procesarMensaje(s, linea);
                 }
             }
         } catch (Exception e) {
-            if (!s.cierreSolicitado.get()) logger.accept("Error de sesion: " + e.getMessage());
-        } finally { cerrarSesion(s); }
+            if (!s.cierreSolicitado.get()) {
+                razon = e instanceof SocketTimeoutException ? "IDLE_TIMEOUT"
+                        : e instanceof SocketException ? "SOCKET_RESET"
+                        : e instanceof IOException ? "READ_ERROR" : "INPUT_ERROR";
+                detalle = detalle(e);
+            }
+        } finally { cerrarSesion(s, razon, detalle); }
     }
 
     private boolean enviarRespuesta(Sesion s, String mensaje) {
@@ -146,12 +157,15 @@ public class Servidor {
         }
     }
 
-    private void cerrarSesion(Sesion s) {
+    private void cerrarSesion(Sesion s, String razon, String detalle) {
         synchronized (lock) {
             if (!s.cierreSolicitado.compareAndSet(false, true)) return;
             s.limpieza = new Thread(() -> limpiar(s), "kvm-limpiar-servidor");
             s.limpieza.setDaemon(true); s.limpieza.start();
         }
+        logger.accept("CIERRE_SESION razon=" + razon + " lado=SERVIDOR sesion="
+                + Integer.toHexString(System.identityHashCode(s))
+                + (detalle == null || detalle.isBlank() ? "" : " detalle=" + detalle));
     }
 
     private void limpiar(Sesion s) {
@@ -261,8 +275,8 @@ public class Servidor {
                     }
                 }
                 if (regreso != null) {
-                    enviarRespuesta(s, regreso);
-                    cerrarSesion(s);
+                    boolean enviado = enviarRespuesta(s, regreso);
+                    cerrarSesion(s, enviado ? "REGRESAR" : "WRITE_ERROR", enviado ? regreso : "REGRESAR");
                     return;
                 }
                 Thread.sleep(10);
@@ -270,7 +284,8 @@ public class Servidor {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
-            if (!s.cierreSolicitado.get()) cerrarSesion(s);
+            if (!s.cierreSolicitado.get()) cerrarSesion(s,
+                    corriendo ? "MONITOR_STOPPED" : "SERVER_STOP", "monitor de borde finalizado");
         }
     }
 
@@ -343,7 +358,7 @@ public class Servidor {
         Thread servidor;
         synchronized (lock) { actual = sesion; escucha = serverSocket; servidor = hiloServidor; }
         if (escucha != null) Cliente.cerrarSocket(escucha, escucha::isClosed, logger);
-        if (actual != null) cerrarSesion(actual);
+        if (actual != null) cerrarSesion(actual, "SERVER_STOP", "servidor detenido");
         discovery.detenerResponder();
         discovery.finalizarResponder();
         if (servidor != null) servidor.interrupt();
@@ -351,7 +366,7 @@ public class Servidor {
         // Una aceptacion concurrente pudo publicar una sesion antes de corriendo=false.
         synchronized (lock) { if (sesion != null) actual = sesion; }
         if (actual != null) {
-            cerrarSesion(actual);
+            cerrarSesion(actual, "SERVER_STOP", "servidor detenido");
             Cliente.finalizarHilo(actual.limpieza, logger);
         }
         boolean terminado = discovery.isDetenido() && (actual == null || actual.limpiezaTerminada);
@@ -372,6 +387,11 @@ public class Servidor {
     }
 
     public boolean isCorriendo() { return corriendo; }
+
+    private static String detalle(Exception e) {
+        String mensaje = e.getMessage();
+        return e.getClass().getSimpleName() + (mensaje == null || mensaje.isBlank() ? "" : ": " + mensaje);
+    }
 
     private static int convertirKeyCode(int code) {
         return switch (code) {
