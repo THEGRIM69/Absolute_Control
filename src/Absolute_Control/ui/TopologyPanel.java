@@ -1,19 +1,15 @@
 package Absolute_Control.ui;
 
 import javax.swing.*;
-import javax.swing.border.CompoundBorder;
-import javax.swing.border.EmptyBorder;
-import javax.swing.border.LineBorder;
 import java.awt.*;
 
 /** Representación exclusivamente visual de la topología prevista. */
 public final class TopologyPanel extends JPanel {
+    private static final long serialVersionUID = 1L;
     public TopologyPanel() {
         super(new GridBagLayout());
         setBackground(RetroPalette.PANEL);
-        setBorder(new CompoundBorder(
-                new LineBorder(RetroPalette.ROYAL_BLUE, 2),
-                new EmptyBorder(8, 12, 8, 12)));
+        setBorder(RetroBorders.compact(RetroPalette.ROYAL_BLUE));
 
         GridBagConstraints c = new GridBagConstraints();
         c.gridy = 0;
@@ -35,17 +31,19 @@ public final class TopologyPanel extends JPanel {
     private JPanel node(String title, String subtitle, Color color) {
         JPanel node = new JPanel(new GridLayout(2, 1, 0, 1));
         node.setBackground(RetroPalette.CONTROL_DISABLED);
-        node.setBorder(new LineBorder(color, 2));
+        node.setBorder(RetroBorders.compact(color));
 
-        JLabel main = centered(title, new Font("Consolas", Font.BOLD, 15), color);
-        JLabel detail = centered(subtitle, new Font("Consolas", Font.PLAIN, 9), color);
+        JLabel main = centered(title, RetroFonts.CARD_TITLE, color);
+        main.setIcon(RetroIcons.icon(RetroIcons.Type.MONITOR, color, 16));
+        main.setIconTextGap(6);
+        JLabel detail = centered(subtitle, RetroFonts.SECONDARY, color);
         node.add(main);
         node.add(detail);
         return node;
     }
 
     private JLabel link(String text) {
-        return centered(text, new Font("Consolas", Font.BOLD, 16), RetroPalette.ELECTRIC_BLUE);
+        return centered(text, RetroFonts.CARD_TITLE, RetroPalette.ELECTRIC_BLUE);
     }
 
     private JLabel centered(String text, Font font, Color color) {
