@@ -4,6 +4,10 @@ import Absolute_Control.core.Cliente;
 import Absolute_Control.core.Discovery;
 import Absolute_Control.core.Servidor;
 import Absolute_Control.core.GeometriaPantalla;
+import Absolute_Control.ui.HeaderPanel;
+import Absolute_Control.ui.NavigationPanel;
+import Absolute_Control.ui.RetroPalette;
+import Absolute_Control.ui.TopologyPanel;
 import com.github.kwhat.jnativehook.GlobalScreen;
 
 import javax.swing.*;
@@ -25,15 +29,6 @@ public class Main extends JFrame {
     }
 
     // ── Colores ───────────────────────────────────────────────────
-    private static final Color BG       = new Color(24, 26, 34);
-    private static final Color PANEL_BG = new Color(32, 35, 46);
-    private static final Color ACCENT   = new Color(64, 196, 255);
-    private static final Color SUCCESS  = new Color(50, 210, 130);
-    private static final Color WARNING  = new Color(240, 195, 60);
-    private static final Color DANGER   = new Color(255, 80, 100);
-    private static final Color TEXT     = new Color(220, 225, 240);
-    private static final Color TEXT_DIM = new Color(120, 130, 155);
-    private static final Color BORDER   = new Color(45, 52, 70);
     private static final Font  MONO     = new Font("Consolas", Font.PLAIN, 12);
     private static final Font  UI_FONT  = new Font("Segoe UI", Font.PLAIN, 13);
     private static final Font  BOLD     = new Font("Segoe UI", Font.BOLD, 13);
@@ -41,7 +36,7 @@ public class Main extends JFrame {
     // ── Estado ────────────────────────────────────────────────────
     private boolean modoRey       = true;
     private boolean secundariaALaDerecha = true;
-    private boolean panelAbierto  = false;
+    private boolean panelAbierto  = true;
 
     // Indica si el modo Rey está "activo" (hook registrado, esperando en el
     // borde o controlando), independientemente de si en este instante el
@@ -66,19 +61,23 @@ public class Main extends JFrame {
     private JLabel     lblIpLocal;
     private JButton    btnAccion;
     private JLabel     lblEstado;
+    private JLabel     lblFooterEstado;
     private JTextArea  logArea;
+    private HeaderPanel headerPanel;
 
     public Main() {
         setTitle("Absolute Control");
         setDefaultCloseOperation(EXIT_ON_CLOSE);
-        setSize(480, 480);
+        setSize(1280, 800);
         setLocationRelativeTo(null);
         setResizable(false);
-        getContentPane().setBackground(BG);
+        getContentPane().setBackground(RetroPalette.BACKGROUND);
         setLayout(new BorderLayout());
 
-        add(buildTogglePanel(), BorderLayout.NORTH);
-        add(buildMainPanel(),   BorderLayout.CENTER);
+        add(buildHeader(),         BorderLayout.NORTH);
+        add(new NavigationPanel(), BorderLayout.WEST);
+        add(buildMainPanel(),      BorderLayout.CENTER);
+        add(buildFooter(),         BorderLayout.SOUTH);
 
         detectarIpLocal();
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
@@ -91,80 +90,70 @@ public class Main extends JFrame {
 
     // ── Panel toggle (cabecera colapsable) ────────────────────────
 
-    private JPanel buildTogglePanel() {
-        JPanel p = new JPanel(new BorderLayout());
-        p.setBackground(PANEL_BG);
-        p.setBorder(new MatteBorder(0, 0, 1, 0, BORDER));
-
-        JLabel title = new JLabel("Absolute Control");
-        title.setFont(new Font("Segoe UI", Font.BOLD, 16));
-        title.setForeground(ACCENT);
-        title.setBorder(new EmptyBorder(12, 14, 12, 0));
-
-        btnTogglePanel = new JButton("▼  Configuración");
+    private JPanel buildHeader() {
+        btnTogglePanel = new JButton("▲  CONFIGURACIÓN");
         btnTogglePanel.setFont(UI_FONT);
-        btnTogglePanel.setForeground(TEXT_DIM);
-        btnTogglePanel.setBackground(PANEL_BG);
-        btnTogglePanel.setBorderPainted(false);
+        btnTogglePanel.setForeground(RetroPalette.TEXT_PRIMARY);
+        btnTogglePanel.setBackground(RetroPalette.ROYAL_BLUE);
+        btnTogglePanel.setBorder(new CompoundBorder(
+                new LineBorder(RetroPalette.ELECTRIC_BLUE, 1),
+                new EmptyBorder(7, 10, 7, 10)));
         btnTogglePanel.setFocusPainted(false);
         btnTogglePanel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        btnTogglePanel.setBorder(new EmptyBorder(0, 0, 0, 14));
         btnTogglePanel.addActionListener(e -> toggleConfig());
-
-        p.add(title,         BorderLayout.WEST);
-        p.add(btnTogglePanel, BorderLayout.EAST);
-        return p;
+        headerPanel = new HeaderPanel(btnTogglePanel);
+        return headerPanel;
     }
 
     private void toggleConfig() {
         panelAbierto = !panelAbierto;
         panelConfig.setVisible(panelAbierto);
-        btnTogglePanel.setText(panelAbierto ? "▲  Configuración" : "▼  Configuración");
-        pack();
-        setSize(480, panelAbierto ? 600 : 480);
+        btnTogglePanel.setText(panelAbierto ? "▲  CONFIGURACIÓN" : "▼  CONFIGURACIÓN");
+        revalidate();
+        repaint();
     }
 
     // ── Panel de configuración (colapsable) ───────────────────────
 
     private JPanel buildConfigPanel() {
-        panelConfig = new JPanel();
-        panelConfig.setLayout(new BoxLayout(panelConfig, BoxLayout.Y_AXIS));
-        panelConfig.setBackground(PANEL_BG);
-        panelConfig.setBorder(new CompoundBorder(
-                new MatteBorder(0, 0, 1, 0, BORDER),
-                new EmptyBorder(16, 16, 16, 16)));
-        panelConfig.setVisible(false);
+        panelConfig = new JPanel(new GridBagLayout());
+        panelConfig.setOpaque(false);
+        panelConfig.setVisible(true);
 
-        // Modo Rey / Esclavo
-        panelConfig.add(buildLabel("Modo"));
-        panelConfig.add(Box.createVerticalStrut(6));
-        panelConfig.add(buildModoSelector());
-        panelConfig.add(Box.createVerticalStrut(14));
+        GridBagConstraints c = new GridBagConstraints();
+        c.gridx = 0;
+        c.weightx = 1;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        c.anchor = GridBagConstraints.WEST;
+        c.insets = new Insets(0, 0, 3, 0);
 
-        // IP
-        panelConfig.add(buildLabel("IP del Servidor (solo modo Rey)"));
-        panelConfig.add(Box.createVerticalStrut(6));
-        panelConfig.add(buildIpRow());
-        panelConfig.add(Box.createVerticalStrut(14));
+        c.gridy = 0;
+        panelConfig.add(buildLabel("IP DEL SERVIDOR (SOLO REY)"), c);
+        c.gridy = 1;
+        c.insets = new Insets(0, 0, 7, 0);
+        panelConfig.add(buildIpRow(), c);
 
-        // Puerto
-        panelConfig.add(buildLabel("Puerto"));
-        panelConfig.add(Box.createVerticalStrut(6));
+        c.gridy = 2;
+        c.insets = new Insets(0, 0, 3, 0);
+        panelConfig.add(buildLabel("PUERTO"), c);
         txtPuerto = buildTextField("", "8080");
-        panelConfig.add(txtPuerto);
-        panelConfig.add(Box.createVerticalStrut(14));
+        c.gridy = 3;
+        c.insets = new Insets(0, 0, 7, 0);
+        panelConfig.add(txtPuerto, c);
 
-        // Posicion global de la secundaria respecto de la principal, en ambos modos.
-        panelConfig.add(buildLabel("La PC secundaria está a la..."));
-        panelConfig.add(Box.createVerticalStrut(6));
-        panelConfig.add(buildPosicionSelector());
-        panelConfig.add(Box.createVerticalStrut(14));
+        c.gridy = 4;
+        c.insets = new Insets(0, 0, 3, 0);
+        panelConfig.add(buildLabel("POSICIÓN DE LA PC SECUNDARIA"), c);
+        c.gridy = 5;
+        c.insets = new Insets(0, 0, 6, 0);
+        panelConfig.add(buildPosicionSelector(), c);
 
-        // IP local
         lblIpLocal = new JLabel("IP local: detectando...");
         lblIpLocal.setFont(MONO);
-        lblIpLocal.setForeground(TEXT_DIM);
-        panelConfig.add(lblIpLocal);
+        lblIpLocal.setForeground(RetroPalette.CYAN);
+        c.gridy = 6;
+        c.insets = new Insets(0, 0, 0, 0);
+        panelConfig.add(lblIpLocal, c);
 
         return panelConfig;
     }
@@ -174,8 +163,8 @@ public class Main extends JFrame {
         p.setOpaque(false);
         p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
 
-        btnRey    = buildToggle("Cliente",    true);
-        btnEsclavo = buildToggle("Servidor", false);
+        btnRey     = buildToggle("REY / CLIENTE", true);
+        btnEsclavo = buildToggle("ESCLAVO / SERVIDOR", false);
 
         ButtonGroup g = new ButtonGroup();
         g.add(btnRey); g.add(btnEsclavo);
@@ -198,8 +187,8 @@ public class Main extends JFrame {
 
         btnBuscarIp = new JButton("Buscar");
         btnBuscarIp.setFont(UI_FONT);
-        btnBuscarIp.setForeground(TEXT);
-        btnBuscarIp.setBackground(new Color(40, 44, 58));
+        btnBuscarIp.setForeground(RetroPalette.TEXT_PRIMARY);
+        btnBuscarIp.setBackground(RetroPalette.CONTROL);
         btnBuscarIp.setBorderPainted(false);
         btnBuscarIp.setFocusPainted(false);
         btnBuscarIp.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
@@ -267,59 +256,173 @@ public class Main extends JFrame {
         btnBuscarIp.setText("Buscar");
         txtIp.setEnabled(modoRey);
         btnBuscarIp.setEnabled(modoRey);
-        txtIp.setBackground(modoRey ? new Color(40, 44, 58) : new Color(30, 33, 44));
+        txtIp.setBackground(modoRey ? RetroPalette.CONTROL : RetroPalette.CONTROL_DISABLED);
         btnAccion.setText(modoRey ? "CONECTAR" : "INICIAR SERVIDOR");
     }
 
     // ── Panel principal (siempre visible) ─────────────────────────
 
     private JPanel buildMainPanel() {
-        JPanel p = new JPanel(new BorderLayout(0, 0));
-        p.setBackground(BG);
+        JPanel p = new JPanel(new BorderLayout(0, 10));
+        p.setBackground(RetroPalette.BACKGROUND);
+        p.setBorder(new EmptyBorder(12, 14, 12, 14));
 
-        JPanel center = new JPanel();
-        center.setLayout(new BoxLayout(center, BoxLayout.Y_AXIS));
-        center.setBackground(BG);
-        center.setBorder(new EmptyBorder(16, 16, 8, 16));
+        JPanel dashboard = new JPanel();
+        dashboard.setLayout(new BoxLayout(dashboard, BoxLayout.Y_AXIS));
+        dashboard.setOpaque(false);
 
-        // Botón acción
-        btnAccion = buildAccionButton("CONECTAR");
-        btnAccion.setMaximumSize(new Dimension(Integer.MAX_VALUE, 44));
-        center.add(buildConfigPanel());
-        center.add(Box.createVerticalStrut(12));
-        center.add(btnAccion);
-        center.add(Box.createVerticalStrut(12));
-        center.add(buildStatusBar());
+        dashboard.add(buildSectionTitle("MODO DE OPERACIÓN"));
+        dashboard.add(Box.createVerticalStrut(5));
+        dashboard.add(buildOperationPanel());
+        dashboard.add(Box.createVerticalStrut(10));
+        dashboard.add(buildSectionTitle("CONEXIONES"));
+        dashboard.add(Box.createVerticalStrut(5));
+        dashboard.add(buildConnectionsPanel());
+        dashboard.add(Box.createVerticalStrut(10));
+        dashboard.add(buildSectionTitle("DISTRIBUCIÓN DE PANTALLAS"));
+        dashboard.add(Box.createVerticalStrut(5));
+        TopologyPanel topology = new TopologyPanel();
+        topology.setAlignmentX(LEFT_ALIGNMENT);
+        topology.setMaximumSize(new Dimension(Integer.MAX_VALUE, 78));
+        topology.setPreferredSize(new Dimension(0, 78));
+        dashboard.add(topology);
 
-        p.add(center,     BorderLayout.NORTH);
-        p.add(buildLog(), BorderLayout.CENTER);
+        p.add(dashboard, BorderLayout.NORTH);
+        p.add(buildConsolePanel(), BorderLayout.CENTER);
         return p;
     }
 
-    private JPanel buildStatusBar() {
+    private JPanel buildOperationPanel() {
+        JPanel panel = retroPanel(new BorderLayout(12, 0), RetroPalette.ROYAL_BLUE);
+        panel.setAlignmentX(LEFT_ALIGNMENT);
+        panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 54));
+        panel.setPreferredSize(new Dimension(0, 54));
+        panel.add(buildModoSelector(), BorderLayout.CENTER);
+
+        JLabel hint = new JLabel("SELECCIONA EL ROL DE ESTE EQUIPO");
+        hint.setFont(new Font("Consolas", Font.PLAIN, 10));
+        hint.setForeground(RetroPalette.CYAN);
+        panel.add(hint, BorderLayout.EAST);
+        return panel;
+    }
+
+    private JPanel buildConnectionsPanel() {
+        JPanel panel = new JPanel(new GridLayout(1, 2, 12, 0));
+        panel.setOpaque(false);
+        panel.setAlignmentX(LEFT_ALIGNMENT);
+        panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 270));
+        panel.setPreferredSize(new Dimension(0, 270));
+        panel.add(buildPc1Panel());
+        panel.add(buildPc2Panel());
+        return panel;
+    }
+
+    private JPanel buildPc1Panel() {
+        JPanel panel = retroPanel(new BorderLayout(0, 7), RetroPalette.ELECTRIC_BLUE);
+
+        JPanel title = new JPanel(new BorderLayout());
+        title.setOpaque(false);
+        JLabel name = cardTitle("PC1");
+        JLabel tag = new JLabel("CONEXIÓN ACTUAL");
+        tag.setFont(new Font("Consolas", Font.BOLD, 10));
+        tag.setForeground(RetroPalette.NEON_GREEN);
+        title.add(name, BorderLayout.WEST);
+        title.add(tag, BorderLayout.EAST);
+
+        btnAccion = buildAccionButton("CONECTAR");
+        btnAccion.setPreferredSize(new Dimension(0, 38));
+        JPanel action = new JPanel(new GridLayout(1, 2, 8, 0));
+        action.setOpaque(false);
+        action.setPreferredSize(new Dimension(0, 38));
+        action.add(btnAccion);
+        action.add(buildConnectionStatus());
+
+        panel.add(title, BorderLayout.NORTH);
+        panel.add(buildConfigPanel(), BorderLayout.CENTER);
+        panel.add(action, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JPanel buildPc2Panel() {
+        JPanel panel = retroPanel(new BorderLayout(), RetroPalette.DISABLED);
+
+        JPanel content = new JPanel();
+        content.setOpaque(false);
+        content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
+
+        JLabel name = cardTitle("PC2");
+        name.setForeground(RetroPalette.DISABLED);
+        name.setAlignmentX(CENTER_ALIGNMENT);
+        JLabel future = new JLabel("PRÓXIMAMENTE");
+        future.setFont(new Font("Consolas", Font.BOLD, 18));
+        future.setForeground(RetroPalette.DISABLED);
+        future.setAlignmentX(CENTER_ALIGNMENT);
+        JLabel detail = new JLabel("SEGUNDA CONEXIÓN NO IMPLEMENTADA");
+        detail.setFont(new Font("Consolas", Font.PLAIN, 11));
+        detail.setForeground(RetroPalette.CLASSIC_GRAY);
+        detail.setAlignmentX(CENTER_ALIGNMENT);
+
+        content.add(Box.createVerticalGlue());
+        content.add(name);
+        content.add(Box.createVerticalStrut(24));
+        content.add(future);
+        content.add(Box.createVerticalStrut(7));
+        content.add(detail);
+        content.add(Box.createVerticalGlue());
+        panel.add(content, BorderLayout.CENTER);
+        return panel;
+    }
+
+    private JPanel buildConnectionStatus() {
         JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         p.setOpaque(false);
-        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
 
-        lblEstado = new JLabel("●  Inactivo");
+        lblEstado = new JLabel("○  Inactivo");
         lblEstado.setFont(UI_FONT);
-        lblEstado.setForeground(TEXT_DIM);
+        lblEstado.setForeground(RetroPalette.ERROR);
         p.add(lblEstado);
         return p;
+    }
+
+    private JPanel buildConsolePanel() {
+        JPanel panel = new JPanel(new BorderLayout(0, 5));
+        panel.setOpaque(false);
+        panel.add(buildSectionTitle("CONSOLA DE EVENTOS"), BorderLayout.NORTH);
+        panel.add(buildLog(), BorderLayout.CENTER);
+        return panel;
     }
 
     private JScrollPane buildLog() {
         logArea = new JTextArea();
         logArea.setFont(MONO);
-        logArea.setBackground(new Color(16, 18, 24));
-        logArea.setForeground(new Color(130, 220, 160));
+        logArea.setBackground(RetroPalette.CONSOLE);
+        logArea.setForeground(RetroPalette.NEON_GREEN);
         logArea.setEditable(false);
         logArea.setBorder(new EmptyBorder(8, 12, 8, 12));
         logArea.setLineWrap(true);
+        logArea.setWrapStyleWord(true);
 
         JScrollPane sp = new JScrollPane(logArea);
-        sp.setBorder(new MatteBorder(1, 0, 0, 0, BORDER));
+        sp.setBorder(new LineBorder(RetroPalette.ELECTRIC_BLUE, 2));
         return sp;
+    }
+
+    private JPanel buildFooter() {
+        JPanel footer = new JPanel(new BorderLayout());
+        footer.setBackground(RetroPalette.PANEL);
+        footer.setBorder(new CompoundBorder(
+                new MatteBorder(2, 0, 0, 0, RetroPalette.ROYAL_BLUE),
+                new EmptyBorder(7, 16, 7, 16)));
+
+        JLabel brand = new JLabel("ABSOLUTE CONTROL // NETWORK KVM");
+        brand.setFont(new Font("Consolas", Font.BOLD, 10));
+        brand.setForeground(RetroPalette.CYAN);
+        lblFooterEstado = new JLabel("SESIÓN: INACTIVA");
+        lblFooterEstado.setFont(new Font("Consolas", Font.BOLD, 10));
+        lblFooterEstado.setForeground(RetroPalette.ERROR);
+        footer.add(brand, BorderLayout.WEST);
+        footer.add(lblFooterEstado, BorderLayout.EAST);
+        return footer;
     }
 
     // ── Lógica de acción ──────────────────────────────────────────
@@ -470,18 +573,23 @@ public class Main extends JFrame {
         Color color;
         switch (estado) {
             case ACTIVO:
-                color = SUCCESS;
+                color = RetroPalette.NEON_GREEN;
                 break;
             case ESPERANDO:
-                color = WARNING;
+                color = RetroPalette.WARNING;
                 break;
             default:
-                color = DANGER;
+                color = RetroPalette.ERROR;
                 punto = "○  ";
                 break;
         }
         lblEstado.setText(punto + msg);
         lblEstado.setForeground(color);
+        if (lblFooterEstado != null) {
+            lblFooterEstado.setText("SESIÓN: " + msg.toUpperCase());
+            lblFooterEstado.setForeground(color);
+        }
+        if (headerPanel != null) headerPanel.setSystemState(msg.toUpperCase(), color);
     }
 
     private void log(String msg) {
@@ -505,10 +613,34 @@ public class Main extends JFrame {
 
     // ── Helpers de UI ─────────────────────────────────────────────
 
+    private JPanel retroPanel(LayoutManager layout, Color borderColor) {
+        JPanel panel = new JPanel(layout);
+        panel.setBackground(RetroPalette.PANEL);
+        panel.setBorder(new CompoundBorder(
+                new LineBorder(borderColor, 2),
+                new EmptyBorder(8, 10, 8, 10)));
+        return panel;
+    }
+
+    private JLabel buildSectionTitle(String text) {
+        JLabel label = new JLabel("// " + text);
+        label.setFont(new Font("Consolas", Font.BOLD, 12));
+        label.setForeground(RetroPalette.CYAN);
+        label.setAlignmentX(LEFT_ALIGNMENT);
+        return label;
+    }
+
+    private JLabel cardTitle(String text) {
+        JLabel label = new JLabel(text);
+        label.setFont(new Font("Consolas", Font.BOLD, 16));
+        label.setForeground(RetroPalette.TEXT_PRIMARY);
+        return label;
+    }
+
     private JLabel buildLabel(String text) {
         JLabel l = new JLabel(text);
         l.setFont(new Font("Segoe UI", Font.BOLD, 11));
-        l.setForeground(TEXT_DIM);
+        l.setForeground(RetroPalette.DISABLED);
         l.setAlignmentX(LEFT_ALIGNMENT);
         return l;
     }
@@ -536,7 +668,7 @@ public class Main extends JFrame {
                         && getText().isEmpty() && !isFocusOwner()) {
                     Graphics2D g2 = (Graphics2D) g.create();
                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                    g2.setColor(TEXT_DIM);
+                    g2.setColor(RetroPalette.DISABLED);
                     g2.setFont(getFont());
                     Insets ins = getInsets();
                     FontMetrics fm = g2.getFontMetrics();
@@ -547,11 +679,11 @@ public class Main extends JFrame {
             }
         };
         f.setFont(MONO);
-        f.setForeground(TEXT);
-        f.setBackground(new Color(40, 44, 58));
-        f.setCaretColor(ACCENT);
+        f.setForeground(RetroPalette.TEXT_PRIMARY);
+        f.setBackground(RetroPalette.CONTROL);
+        f.setCaretColor(RetroPalette.ELECTRIC_BLUE);
         f.setBorder(BorderFactory.createCompoundBorder(
-                new LineBorder(BORDER, 1, true),
+                new LineBorder(RetroPalette.ROYAL_BLUE, 1),
                 new EmptyBorder(6, 10, 6, 10)));
         f.setMaximumSize(new Dimension(Integer.MAX_VALUE, 34));
 
@@ -570,20 +702,21 @@ public class Main extends JFrame {
             @Override protected void paintComponent(Graphics g) {
                 Graphics2D g2 = (Graphics2D) g.create();
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g2.setColor(isSelected() ? ACCENT : PANEL_BG);
-                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 8, 8);
+                g2.setColor(isSelected() ? RetroPalette.ROYAL_BLUE : RetroPalette.CONTROL);
+                g2.fillRect(0, 0, getWidth(), getHeight());
                 g2.dispose();
                 super.paintComponent(g);
             }
         };
         b.setFont(BOLD);
-        b.setForeground(selected ? BG : TEXT_DIM);
+        b.setForeground(selected ? Color.WHITE : RetroPalette.DISABLED);
         b.setOpaque(false);
         b.setContentAreaFilled(false);
         b.setBorderPainted(false);
         b.setFocusPainted(false);
         b.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        b.addChangeListener(e -> b.setForeground(b.isSelected() ? BG : TEXT_DIM));
+        b.addChangeListener(e -> b.setForeground(b.isSelected()
+                ? Color.WHITE : RetroPalette.DISABLED));
         return b;
     }
 
@@ -592,14 +725,14 @@ public class Main extends JFrame {
             @Override protected void paintComponent(Graphics g) {
                 Graphics2D g2 = (Graphics2D) g.create();
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g2.setColor(ACCENT);
-                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 8, 8);
+                g2.setColor(isEnabled() ? RetroPalette.NEON_GREEN : RetroPalette.DISABLED);
+                g2.fillRect(0, 0, getWidth(), getHeight());
                 g2.dispose();
                 super.paintComponent(g);
             }
         };
         b.setFont(BOLD);
-        b.setForeground(BG);
+        b.setForeground(RetroPalette.BACKGROUND);
         b.setOpaque(false);
         b.setContentAreaFilled(false);
         b.setBorderPainted(false);
