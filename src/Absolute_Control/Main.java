@@ -60,6 +60,8 @@ public class Main extends JFrame {
 
     public Main() {
         setTitle("Absolute Control");
+        java.util.List<Image> windowIcons = BrandAssets.windowIcons();
+        if (!windowIcons.isEmpty()) setIconImages(windowIcons);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setSize(1280, 800);
         setLocationRelativeTo(null);

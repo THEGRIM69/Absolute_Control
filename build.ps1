@@ -27,6 +27,7 @@ $ErrorActionPreference = "Stop"
 $AppName      = "AbsoluteControl"
 $MainClass    = "Absolute_Control.Main"
 $SrcDir       = "src"
+$AssetsDir    = "assets"
 $LibJar       = "lib\jnativehook-2.2.1.jar"
 $BuildDir     = "build"
 $ClassesDir   = "$BuildDir\classes"
@@ -48,6 +49,12 @@ Write-Host "Compilando..." -ForegroundColor Cyan
 $sources = Get-ChildItem -Recurse -Path $SrcDir -Filter "*.java" | ForEach-Object { $_.FullName }
 javac -cp $LibJar -d $ClassesDir $sources
 if ($LASTEXITCODE -ne 0) { throw "Error de compilación" }
+
+# Copiar recursos conservando su ruta para que BrandAssets los encuentre
+# desde el classpath tanto en ejecución directa como dentro del JAR.
+if (Test-Path $AssetsDir) {
+    Copy-Item -Recurse -Force $AssetsDir $ClassesDir
+}
 
 # ── 3. Extraer jnativehook dentro de las clases compiladas ─────────
 # jpackage necesita un único .jar "fat" con todo adentro (o un classpath

@@ -21,8 +21,6 @@ public final class HeaderPanel extends JPanel {
         JLabel title = new JLabel("ABSOLUTE CONTROL");
         title.setFont(RetroFonts.TITLE);
         title.setForeground(Color.WHITE);
-        title.setIcon(RetroIcons.icon(RetroIcons.Type.CONNECTION, RetroPalette.CYAN, 20));
-        title.setIconTextGap(10);
         title.setAlignmentX(LEFT_ALIGNMENT);
 
         JLabel subtitle = new JLabel("NETWORK KVM");
@@ -34,6 +32,19 @@ public final class HeaderPanel extends JPanel {
         identity.add(Box.createVerticalStrut(2));
         identity.add(subtitle);
 
+        JPanel brand = new JPanel(new BorderLayout(12, 0));
+        brand.setOpaque(false);
+        ImageIcon crown = BrandAssets.crownIcon(48);
+        if (crown != null) {
+            JLabel crownLabel = new JLabel(crown);
+            crownLabel.setPreferredSize(new Dimension(48, 48));
+            brand.add(crownLabel, BorderLayout.WEST);
+        } else {
+            title.setIcon(RetroIcons.icon(RetroIcons.Type.CONNECTION, RetroPalette.CYAN, 20));
+            title.setIconTextGap(10);
+        }
+        brand.add(identity, BorderLayout.CENTER);
+
         JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 14, 7));
         right.setOpaque(false);
         systemState = new JLabel("SISTEMA LISTO");
@@ -42,7 +53,7 @@ public final class HeaderPanel extends JPanel {
         right.add(systemState);
         right.add(configurationButton);
 
-        add(identity, BorderLayout.WEST);
+        add(brand, BorderLayout.WEST);
         add(right, BorderLayout.EAST);
     }
 
