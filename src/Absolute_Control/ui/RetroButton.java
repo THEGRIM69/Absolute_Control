@@ -11,7 +11,7 @@ public final class RetroButton extends JButton {
     private static final long serialVersionUID = 1L;
     public enum Style { PRIMARY, SECONDARY, HEADER, NAVIGATION, NAV_SELECTED }
 
-    private final Style style;
+    private Style style;
 
     public RetroButton(String text, Style style) {
         super(text);
@@ -24,6 +24,12 @@ public final class RetroButton extends JButton {
         setRolloverEnabled(true);
         setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         setMargin(new Insets(7, 14, 9, 14));
+    }
+
+    public void setStyle(Style style) {
+        if (style == null) throw new NullPointerException("style");
+        this.style = style;
+        repaint();
     }
 
     @Override protected void paintComponent(Graphics g) {

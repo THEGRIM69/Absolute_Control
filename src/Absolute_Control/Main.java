@@ -57,6 +57,12 @@ public class Main extends JFrame {
     private JLabel     lblFooterEstado;
     private JTextArea  logArea;
     private HeaderPanel headerPanel;
+    private ConnectionPanel connectionPanel;
+    private CardLayout screenLayout;
+    private JPanel screens;
+    private NavigationPanel navigationPanel;
+    private EstadoConexion estadoActual = EstadoConexion.INACTIVO;
+    private String mensajeEstadoActual = "Control local - listo";
 
     public Main() {
         setTitle("Absolute Control");
@@ -69,10 +75,28 @@ public class Main extends JFrame {
         getContentPane().setBackground(RetroPalette.BACKGROUND);
         setLayout(new BorderLayout());
 
-        add(buildHeader(),         BorderLayout.NORTH);
-        add(new NavigationPanel(), BorderLayout.WEST);
-        add(buildMainPanel(),      BorderLayout.CENTER);
-        add(buildFooter(),         BorderLayout.SOUTH);
+        add(buildHeader(), BorderLayout.NORTH);
+
+        screenLayout = new CardLayout();
+        screens = new JPanel(screenLayout);
+        screens.add(buildMainPanel(), NavigationPanel.Page.INICIO.name());
+        connectionPanel = new ConnectionPanel(new ConnectionPanel.ControlConexion() {
+            @Override public ConnectionPanel.ResultadoSolicitud conectar(
+                    Absolute_Control.equipos.EquipoGuardado equipo) {
+                return solicitarConexionRapida(equipo);
+            }
+
+            @Override public ConnectionPanel.ResultadoSolicitud detener() {
+                return solicitarDetencionRapida();
+            }
+        });
+        screens.add(connectionPanel, NavigationPanel.Page.CONEXION.name());
+        navigationPanel = new NavigationPanel(this::showPage);
+        add(navigationPanel, BorderLayout.WEST);
+        add(screens, BorderLayout.CENTER);
+        add(buildFooter(), BorderLayout.SOUTH);
+        showPage(NavigationPanel.Page.INICIO);
+        sincronizarConexionRapida();
 
         detectarIpLocal();
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
@@ -81,6 +105,12 @@ public class Main extends JFrame {
                 detenerComponentes(true);
             }
         });
+    }
+
+    private void showPage(NavigationPanel.Page page) {
+        screenLayout.show(screens, page.name());
+        navigationPanel.setActivePage(page);
+        btnTogglePanel.setEnabled(page == NavigationPanel.Page.INICIO);
     }
 
     // ── Panel toggle (cabecera colapsable) ────────────────────────
@@ -240,6 +270,7 @@ public class Main extends JFrame {
         btnBuscarIp.setEnabled(modoRey);
         txtIp.setBackground(modoRey ? RetroPalette.CONTROL : RetroPalette.CONTROL_DISABLED);
         btnAccion.setText(modoRey ? "CONECTAR" : "INICIAR SERVIDOR");
+        sincronizarConexionRapida();
     }
 
     // ── Panel principal (siempre visible) ─────────────────────────
@@ -496,15 +527,18 @@ public class Main extends JFrame {
         }
     }
 
-    private void iniciarCliente() {
+    private boolean iniciarCliente() {
         String ip    = txtIp.getText().trim();
         int    puerto;
         try { puerto = Integer.parseInt(txtPuerto.getText().trim()); }
-        catch (NumberFormatException e) { log("Puerto invalido"); return; }
+        catch (NumberFormatException e) { log("Puerto invalido"); return false; }
 
         GeometriaPantalla pantalla = GeometriaPantalla.actual();
 
-        if (ip.isEmpty() || puerto < 1 || puerto > 65535) { log("IP o puerto invalido"); return; }
+        if (ip.isEmpty() || puerto < 1 || puerto > 65535) {
+            log("IP o puerto invalido");
+            return false;
+        }
         final long actual = ++generacion;
         cliente = new Cliente(ip, puerto, secundariaALaDerecha, pantalla, this::log, estado ->
                 SwingUtilities.invokeLater(() -> {
@@ -525,10 +559,50 @@ public class Main extends JFrame {
             setEstado(EstadoConexion.ESPERANDO, "Rey activo — lleva el mouse al borde para conectar");
             btnAccion.setText("DETENER");
             log("Modo Rey iniciado. Servidor: " + ip + ":" + puerto);
+            return true;
         } catch (Exception e) {
             detenerModoRey();
             log("Error: " + e.getMessage());
+            return false;
         }
+    }
+
+    private ConnectionPanel.ResultadoSolicitud solicitarConexionRapida(
+            Absolute_Control.equipos.EquipoGuardado equipo) {
+        if (!modoRey) {
+            return ConnectionPanel.ResultadoSolicitud.rechazada(
+                    "CAMBIA EL ROL A REY / CLIENTE DESDE INICIO");
+        }
+        if (parando || cierreEnCurso) {
+            return ConnectionPanel.ResultadoSolicitud.rechazada(
+                    "HAY UNA FINALIZACIÓN EN CURSO");
+        }
+        if (reyActivo || cliente != null || servidor != null) {
+            return ConnectionPanel.ResultadoSolicitud.rechazada(
+                    "YA EXISTE UNA SESIÓN O MODO KVM ACTIVO");
+        }
+
+        txtIp.setText(equipo.getIp());
+        txtPuerto.setText(String.valueOf(equipo.getPuerto()));
+        if (!iniciarCliente()) {
+            return ConnectionPanel.ResultadoSolicitud.rechazada(
+                    "NO SE PUDO INICIAR EL MODO REY");
+        }
+        return ConnectionPanel.ResultadoSolicitud.aceptada(
+                "MODO REY INICIADO PARA " + equipo.getNombre());
+    }
+
+    private ConnectionPanel.ResultadoSolicitud solicitarDetencionRapida() {
+        if (parando || cierreEnCurso) {
+            return ConnectionPanel.ResultadoSolicitud.rechazada(
+                    "LA FINALIZACIÓN YA ESTÁ EN CURSO");
+        }
+        if (!reyActivo) {
+            return ConnectionPanel.ResultadoSolicitud.rechazada(
+                    "NO HAY UNA SESIÓN CLIENTE ACTIVA");
+        }
+        detenerModoRey();
+        return ConnectionPanel.ResultadoSolicitud.aceptada("FINALIZANDO MODO REY");
     }
 
     private void detenerModoRey() { detenerComponentes(false); }
@@ -612,6 +686,8 @@ public class Main extends JFrame {
     // ── Utilidades ────────────────────────────────────────────────
 
     private void setEstado(EstadoConexion estado, String msg) {
+        estadoActual = estado;
+        mensajeEstadoActual = msg;
         String punto = "●  ";
         Color color;
         switch (estado) {
@@ -633,6 +709,36 @@ public class Main extends JFrame {
             lblFooterEstado.setForeground(color);
         }
         if (headerPanel != null) headerPanel.setSystemState(msg.toUpperCase(), color);
+        sincronizarConexionRapida();
+    }
+
+    private void sincronizarConexionRapida() {
+        if (connectionPanel == null) return;
+        ConnectionPanel.EstadoConexionRapida estado;
+        String mensaje;
+        if (parando || cierreEnCurso) {
+            estado = ConnectionPanel.EstadoConexionRapida.FINALIZANDO;
+            mensaje = "FINALIZANDO CONEXIONES...";
+        } else if (!modoRey || servidor != null) {
+            estado = ConnectionPanel.EstadoConexionRapida.ROL_NO_PERMITIDO;
+            mensaje = "DISPONIBLE SÓLO EN ROL REY / CLIENTE";
+        } else if (reyActivo) {
+            if (estadoActual == EstadoConexion.ACTIVO) {
+                estado = ConnectionPanel.EstadoConexionRapida.CONECTADO;
+            } else if (estadoActual == EstadoConexion.ESPERANDO
+                    && mensajeEstadoActual.toLowerCase().startsWith("conectando")) {
+                estado = ConnectionPanel.EstadoConexionRapida.CONECTANDO;
+            } else if (estadoActual == EstadoConexion.INACTIVO) {
+                estado = ConnectionPanel.EstadoConexionRapida.ERROR_ACTIVO;
+            } else {
+                estado = ConnectionPanel.EstadoConexionRapida.ACTIVO_LOCAL;
+            }
+            mensaje = mensajeEstadoActual.toUpperCase();
+        } else {
+            estado = ConnectionPanel.EstadoConexionRapida.DISPONIBLE;
+            mensaje = "DISPONIBLE PARA CONECTAR";
+        }
+        connectionPanel.actualizarEstadoConexion(estado, mensaje);
     }
 
     private void log(String msg) {
