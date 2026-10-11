@@ -4,6 +4,8 @@ import Absolute_Control.core.Cliente;
 import Absolute_Control.core.Discovery;
 import Absolute_Control.core.Servidor;
 import Absolute_Control.core.GeometriaPantalla;
+import Absolute_Control.historial.HistorialAsync;
+import Absolute_Control.historial.RegistroSesiones;
 import Absolute_Control.ui.*;
 import com.github.kwhat.jnativehook.GlobalScreen;
 
@@ -11,6 +13,7 @@ import javax.swing.*;
 import javax.swing.border.*;
 import java.awt.*;
 import java.net.InetAddress;
+import java.time.Duration;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -50,7 +53,6 @@ public class Main extends JFrame {
     private JToggleButton btnRey, btnEsclavo;
     private JTextField txtIp, txtPuerto;
     private JButton    btnBuscarIp;
-    private JToggleButton btnIzquierda, btnDerecha;
     private JLabel     lblIpLocal;
     private JButton    btnAccion;
     private JLabel     lblEstado;
@@ -58,9 +60,13 @@ public class Main extends JFrame {
     private JTextArea  logArea;
     private HeaderPanel headerPanel;
     private ConnectionPanel connectionPanel;
+    private TopologyPanel topologyPanel;
     private CardLayout screenLayout;
     private JPanel screens;
     private NavigationPanel navigationPanel;
+    private EventsPanel eventsPanel;
+    private HistorialAsync history;
+    private RegistroSesiones sessionHistory;
     private EstadoConexion estadoActual = EstadoConexion.INACTIVO;
     private String mensajeEstadoActual = "Control local - listo";
 
@@ -74,6 +80,9 @@ public class Main extends JFrame {
         setResizable(false);
         getContentPane().setBackground(RetroPalette.BACKGROUND);
         setLayout(new BorderLayout());
+
+        history = HistorialAsync.predeterminado(this::reportHistoryError);
+        sessionHistory = new RegistroSesiones(history::registrar);
 
         add(buildHeader(), BorderLayout.NORTH);
 
@@ -91,6 +100,8 @@ public class Main extends JFrame {
             }
         });
         screens.add(connectionPanel, NavigationPanel.Page.CONEXION.name());
+        eventsPanel = new EventsPanel(history);
+        screens.add(eventsPanel, NavigationPanel.Page.EVENTOS.name());
         navigationPanel = new NavigationPanel(this::showPage);
         add(navigationPanel, BorderLayout.WEST);
         add(screens, BorderLayout.CENTER);
@@ -111,6 +122,7 @@ public class Main extends JFrame {
         screenLayout.show(screens, page.name());
         navigationPanel.setActivePage(page);
         btnTogglePanel.setEnabled(page == NavigationPanel.Page.INICIO);
+        if (page == NavigationPanel.Page.EVENTOS) eventsPanel.actualizar();
     }
 
     // ── Panel toggle (cabecera colapsable) ────────────────────────
@@ -159,17 +171,10 @@ public class Main extends JFrame {
         c.insets = new Insets(0, 0, 7, 0);
         panelConfig.add(txtPuerto, c);
 
-        c.gridy = 4;
-        c.insets = new Insets(0, 0, 3, 0);
-        panelConfig.add(buildLabel("POSICIÓN DE LA PC SECUNDARIA"), c);
-        c.gridy = 5;
-        c.insets = new Insets(0, 0, 6, 0);
-        panelConfig.add(buildPosicionSelector(), c);
-
         lblIpLocal = new JLabel("IP local: detectando...");
         lblIpLocal.setFont(RetroFonts.BODY);
         lblIpLocal.setForeground(RetroPalette.CYAN);
-        c.gridy = 6;
+        c.gridy = 4;
         c.insets = new Insets(0, 0, 0, 0);
         panelConfig.add(lblIpLocal, c);
 
@@ -244,25 +249,6 @@ public class Main extends JFrame {
         hilo.start();
     }
 
-    private JPanel buildPosicionSelector() {
-        JPanel p = new JPanel(new GridLayout(1, 2, 8, 0));
-        p.setOpaque(false);
-        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
-
-        btnIzquierda = buildToggle("◄  Secundaria a izquierda", false);
-        btnDerecha   = buildToggle("Secundaria a derecha  ►",   true);
-
-        ButtonGroup g = new ButtonGroup();
-        g.add(btnIzquierda); g.add(btnDerecha);
-        btnDerecha.setSelected(true);
-
-        btnIzquierda.addActionListener(e -> secundariaALaDerecha = false);
-        btnDerecha.addActionListener(e   -> secundariaALaDerecha = true);
-
-        p.add(btnIzquierda); p.add(btnDerecha);
-        return p;
-    }
-
     private void actualizarModo() {
         generacion++;
         btnBuscarIp.setText("Buscar");
@@ -294,11 +280,11 @@ public class Main extends JFrame {
         dashboard.add(Box.createVerticalStrut(10));
         dashboard.add(buildSectionTitle("DISTRIBUCIÓN DE PANTALLAS"));
         dashboard.add(Box.createVerticalStrut(5));
-        TopologyPanel topology = new TopologyPanel();
-        topology.setAlignmentX(LEFT_ALIGNMENT);
-        topology.setMaximumSize(new Dimension(Integer.MAX_VALUE, 78));
-        topology.setPreferredSize(new Dimension(0, 78));
-        dashboard.add(topology);
+        topologyPanel = new TopologyPanel(secundariaALaDerecha, this::actualizarPosicion);
+        topologyPanel.setAlignmentX(LEFT_ALIGNMENT);
+        topologyPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 122));
+        topologyPanel.setPreferredSize(new Dimension(0, 122));
+        dashboard.add(topologyPanel);
 
         p.add(dashboard, BorderLayout.NORTH);
         p.add(buildConsolePanel(), BorderLayout.CENTER);
@@ -323,8 +309,8 @@ public class Main extends JFrame {
         JPanel panel = new JPanel(new GridLayout(1, 2, 12, 0));
         panel.setOpaque(false);
         panel.setAlignmentX(LEFT_ALIGNMENT);
-        panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 292));
-        panel.setPreferredSize(new Dimension(0, 292));
+        panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 248));
+        panel.setPreferredSize(new Dimension(0, 248));
         panel.add(buildPc1Panel());
         panel.add(buildPc2Panel());
         return panel;
@@ -373,7 +359,7 @@ public class Main extends JFrame {
         hidden.setFont(RetroFonts.SECTION);
         hidden.setForeground(RetroPalette.CYAN);
         hidden.setAlignmentX(CENTER_ALIGNMENT);
-        JLabel hint = new JLabel("USA EL BOTÓN DEL HEADER PARA MOSTRAR IP, PUERTO Y POSICIÓN");
+        JLabel hint = new JLabel("USA EL BOTÓN DEL HEADER PARA MOSTRAR IP Y PUERTO");
         hint.setFont(RetroFonts.SECONDARY);
         hint.setForeground(RetroPalette.TEXT_SECONDARY);
         hint.setAlignmentX(CENTER_ALIGNMENT);
@@ -528,6 +514,10 @@ public class Main extends JFrame {
     }
 
     private boolean iniciarCliente() {
+        return iniciarCliente("CONEXIÓN MANUAL");
+    }
+
+    private boolean iniciarCliente(String historicalName) {
         String ip    = txtIp.getText().trim();
         int    puerto;
         try { puerto = Integer.parseInt(txtPuerto.getText().trim()); }
@@ -539,10 +529,18 @@ public class Main extends JFrame {
             log("IP o puerto invalido");
             return false;
         }
+        sessionHistory.prepararDestino(historicalName, ip, puerto);
         final long actual = ++generacion;
         cliente = new Cliente(ip, puerto, secundariaALaDerecha, pantalla, this::log, estado ->
                 SwingUtilities.invokeLater(() -> {
                     if (actual != generacion || !reyActivo || parando) return;
+                    switch (estado) {
+                        case CONECTANDO -> sessionHistory.conectando();
+                        case REMOTO -> sessionHistory.conexionConfirmada();
+                        case ERROR -> sessionHistory.error();
+                        case LOCAL -> sessionHistory.regresoLocal();
+                        default -> { }
+                    }
                     switch (estado) {
                         case REMOTO -> setEstado(EstadoConexion.ACTIVO, "Control remoto activo");
                         case CONECTANDO -> setEstado(EstadoConexion.ESPERANDO, "Conectando...");
@@ -561,6 +559,7 @@ public class Main extends JFrame {
             log("Modo Rey iniciado. Servidor: " + ip + ":" + puerto);
             return true;
         } catch (Exception e) {
+            sessionHistory.finalizarModo();
             detenerModoRey();
             log("Error: " + e.getMessage());
             return false;
@@ -584,7 +583,7 @@ public class Main extends JFrame {
 
         txtIp.setText(equipo.getIp());
         txtPuerto.setText(String.valueOf(equipo.getPuerto()));
-        if (!iniciarCliente()) {
+        if (!iniciarCliente(equipo.getNombre())) {
             return ConnectionPanel.ResultadoSolicitud.rechazada(
                     "NO SE PUDO INICIAR EL MODO REY");
         }
@@ -610,6 +609,7 @@ public class Main extends JFrame {
     private void detenerComponentes(boolean cerrar) {
         cerrarVentana |= cerrar;
         if (cierreEnCurso) return;
+        sessionHistory.finalizarModo();
         generacion++; reyActivo = false; parando = true; cierreEnCurso = true;
         final Cliente anteriorCliente = cliente;
         final Servidor anteriorServidor = servidor;
@@ -626,6 +626,7 @@ public class Main extends JFrame {
                     terminado &= anteriorCliente.esperarDetenido();
                 }
                 if (anteriorServidor != null) terminado &= anteriorServidor.esperarDetenido();
+                if (cerrar && history != null) history.cerrar(Duration.ofMillis(1500));
                 return terminado;
             }
             @Override protected void done() {
@@ -651,9 +652,20 @@ public class Main extends JFrame {
     private void bloquearConfig(boolean bloquear) {
         btnRey.setEnabled(!bloquear); btnEsclavo.setEnabled(!bloquear);
         txtIp.setEnabled(!bloquear && modoRey); txtPuerto.setEnabled(!bloquear);
-        btnIzquierda.setEnabled(!bloquear); btnDerecha.setEnabled(!bloquear);
+        if (topologyPanel != null) topologyPanel.setPositionSelectionEnabled(!bloquear);
         btnBuscarIp.setEnabled(!bloquear && modoRey);
         if (!bloquear) btnBuscarIp.setText("Buscar");
+    }
+
+    private void actualizarPosicion(boolean aLaDerecha) {
+        if (reyActivo || servidor != null || parando || cierreEnCurso) {
+            topologyPanel.setPc1Right(secundariaALaDerecha);
+            return;
+        }
+        secundariaALaDerecha = aLaDerecha;
+        topologyPanel.setPc1Right(secundariaALaDerecha);
+        log("Distribución actualizada: PC1 a la "
+                + (secundariaALaDerecha ? "derecha" : "izquierda"));
     }
 
     private void iniciarServidor() {
@@ -748,6 +760,15 @@ public class Main extends JFrame {
                     t.getHour(), t.getMinute(), t.getSecond(), msg));
             logArea.setCaretPosition(logArea.getDocument().getLength());
 
+        });
+    }
+
+    private void reportHistoryError(Throwable error) {
+        String message = error == null || error.getMessage() == null
+                ? "FALLO DESCONOCIDO DEL HISTORIAL" : error.getMessage();
+        SwingUtilities.invokeLater(() -> {
+            if (eventsPanel != null) eventsPanel.mostrarError(message.toUpperCase());
+            if (logArea != null) log("Historial: " + message);
         });
     }
 

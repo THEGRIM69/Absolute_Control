@@ -7,7 +7,7 @@ import java.util.function.Consumer;
 /** Barra lateral visual con navegación habilitada para Inicio y Conexión. */
 public final class NavigationPanel extends JPanel {
     private static final long serialVersionUID = 1L;
-    public enum Page { INICIO, CONEXION }
+    public enum Page { INICIO, CONEXION, EVENTOS }
 
     private static final String[] ITEMS = {
             "INICIO", "CONEXIÓN", "PANTALLAS", "EVENTOS", "CONFIGURACIÓN", "AYUDA"
@@ -18,6 +18,7 @@ public final class NavigationPanel extends JPanel {
     };
     private final RetroButton inicioButton;
     private final RetroButton conexionButton;
+    private final RetroButton eventsButton;
     private Page activePage = Page.INICIO;
 
     public NavigationPanel(Consumer<Page> onNavigate) {
@@ -35,14 +36,17 @@ public final class NavigationPanel extends JPanel {
 
         inicioButton = item(ITEMS[0], ICONS[0], true);
         conexionButton = item(ITEMS[1], ICONS[1], false);
+        eventsButton = item(ITEMS[3], ICONS[3], false);
         inicioButton.addActionListener(event -> onNavigate.accept(Page.INICIO));
         conexionButton.addActionListener(event -> onNavigate.accept(Page.CONEXION));
+        eventsButton.addActionListener(event -> onNavigate.accept(Page.EVENTOS));
 
         for (int i = 0; i < ITEMS.length; i++) {
             JButton button = i == 0 ? inicioButton
                     : i == 1 ? conexionButton
+                    : i == 3 ? eventsButton
                     : item(ITEMS[i], ICONS[i], false);
-            if (i > 1) {
+            if (i > 1 && i != 3) {
                 button.setEnabled(false);
                 button.setCursor(Cursor.getDefaultCursor());
             }
@@ -57,6 +61,7 @@ public final class NavigationPanel extends JPanel {
         activePage = page;
         applyState(inicioButton, RetroIcons.Type.HOME, page == Page.INICIO);
         applyState(conexionButton, RetroIcons.Type.CONNECTION, page == Page.CONEXION);
+        applyState(eventsButton, RetroIcons.Type.EVENTS, page == Page.EVENTOS);
     }
 
     public Page getActivePage() {
